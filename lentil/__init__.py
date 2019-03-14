@@ -3,7 +3,7 @@ import math
 import os
 import colorsys
 import numpy as np
-from scipy import interpolate, optimize
+from scipy import interpolate, optimize, signal
 from matplotlib import pyplot as plt
 from matplotlib.colors import ListedColormap
 import matplotlib
@@ -15,8 +15,12 @@ SAGGITAL = 1
 MERIDIONAL = 2
 BOTH_AXES = 3
 
-path = '/mnt/mtfm/16-55mm/27mm f2.8/mtfmappertemp_20/'
+PATH = '/mnt/mtfm/16-55mm/27mm f2.8/mtfmappertemp_{:.0f}/'
+numberrange = range(14, 24)
+PATH = '/mnt/mtfm/16-55mm/27mm f5.6/mtfmappertemp_{:.0f}/'
+numberrange = range(43, 52)
 sfrfilename = 'edge_sfr_values.txt'
+PATH = "/mnt/mtfm/23mm f1.4/Results/"
 
 SFR_HEADER = [
     'blockid',
@@ -181,7 +185,7 @@ class SFRField():
         :param axis: constant SAGGITAL or MERIDIONAL or BOTH_AXES
         :return: list of points
         """
-        return [point for point in points if point.is_axis(axis)]
+        return [point for point in self.points if point.is_axis(axis)]
 
     def get_avg_mtf50(self):
         """
@@ -340,15 +344,78 @@ class SFRField():
         plt.show()
 
 
-with open(os.path.join(path, sfrfilename), 'r') as sfrfile:
-    csvreader = csv.reader(sfrfile, delimiter=' ', quotechar='|')
+class FocusSet:
+    """
+    A range of fields with stepped focus, in order
+    """
+    def __init__(self, filenames):
+        self.fields = []
+        for filename in filenames:
+            print("Opening file {}".format(filename))
+            with open(filename, 'r') as sfrfile:
+                csvreader = csv.reader(sfrfile, delimiter=' ', quotechar='|')
 
-    points = []
-    for row in csvreader:
-        points.append(SFRPoint(row))
+                points = []
+                for row in csvreader:
+                    points.append(SFRPoint(row))
 
-field = SFRField(points)
-field.plot(SAGGITAL, 1, detail=1.5)
-field.plot(MERIDIONAL, 1, detail=1.5)
+            field = SFRField(points)
+            self.fields.append(field)
+
+    def plot_sfr_vs_focus(self, x, y, freq=-1, axis=BOTH_AXES, show=False):
+        y_values = []
+        for field in self.fields:
+            y_values.append(field.interpolate_value(x, y, freq, axis))
+        x_values = np.arange(0, len(y_values), 1)
+        y_values = np.array(y_values)
+        plt.plot(x_values, y_values, color='black')
+        weights = (y_values / np.max(y_values)) ** 4
+
+        y_values = np.array(y_values)
+        plot_x = np.linspace(0, max(x_values), 100)
+        r = 0
+        if r:
+            mean_guess = np.argmax(y_values)
+            amplitude_guess = y_values[mean_guess] / 2.0
+            sigma_guess = 2.0
+            peaky = -amplitude_guess/20.0
+            print(amplitude_guess, mean_guess, sigma_guess, peaky)
+
+            def guassianfunc(xVar, a, b, c, a2=None):
+                if a2 is None:
+                    a2 = a
+                comp1 = a * np.exp(-(xVar - b) ** 2 / (4 * c ** 2))
+                comp2 = a2 * np.exp(-(xVar - b) ** 2 / (0.4 * c ** 2))
+                return (comp1 + comp2) # / (np.sum(a+a2))
+
+            fitted_params, _ = optimize.curve_fit(guassianfunc, x_values, y_values,
+                                                  p0=[amplitude_guess, mean_guess, sigma_guess])
+            print(fitted_params)
+
+            fitted_curve_plot_y = guassianfunc(plot_x, *fitted_params)
+        else:
+            fn = interpolate.UnivariateSpline(x_values, y_values, k=2, w=weights)
+            fitted_curve_plot_y = np.clip(fn(plot_x), 0.0, float("inf"))
+
+        plt.plot(plot_x, fitted_curve_plot_y, color='red')
+
+        if show:
+            plt.show()
+
+
+imagedirs = os.listdir(PATH)
+filenames = []
+for dir in imagedirs:
+    if dir[:5] == 'mtfma':
+        filename = os.path.join(PATH, dir, sfrfilename)
+        filenames.append(filename)
+
+focusset = FocusSet(filenames)
+axis = SAGGITAL
+focusset.plot_sfr_vs_focus(4000, 2000, -1, axis)
+focusset.plot_sfr_vs_focus(2000, 2000, -1, axis, show=True)
+
+# field.plot(SAGGITAL, 1, detail=1.5)
+# field.plot(MERIDIONAL, 1, detail=1.5)
 
 
