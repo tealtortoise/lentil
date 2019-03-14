@@ -1,5 +1,3 @@
-import rawpy
-import imageio
 import csv
 import math
 import os
@@ -11,7 +9,6 @@ from matplotlib.colors import ListedColormap
 import matplotlib
 from mpl_toolkits.mplot3d import Axes3D
 
-
 DEFAULT_PIXEL_SIZE = 4e-6
 
 SAGGITAL = 1
@@ -21,18 +18,19 @@ BOTH_AXES = 3
 path = '/mnt/mtfm/16-55mm/27mm f2.8/mtfmappertemp_20/'
 sfrfilename = 'edge_sfr_values.txt'
 
-sfr_headers = [
+SFR_HEADER = [
     'blockid',
     'edgex',
     'edgey',
     'edgeangle',
     'radialangle'
 ]
+
 # with rawpy.imread(path+rawfile) as raw:
 #     rgb = raw.postprocess(use_auto_wb=True, no_auto_bright=True, gamma=(1, 1))
 # imageio.imsave(path+rawfile+'rawpy.png', rgb, )
 
-SFR_FREQUENCIES = [x / 64 for x in range(64)]  # List of sfr frequencies in cycles/pixel
+RAW_SFR_FREQUENCIES = [x / 64 for x in range(64)]  # List of sfr frequencies in cycles/pixel
 
 
 class SFRPoint:
@@ -40,6 +38,12 @@ class SFRPoint:
     Holds all data for one SFR edge analysis point
     """
     def __init__(self, rowdata, pixelsize=None):
+        """
+        Processes row from csv reader
+
+        :param rowdata: raw from csv reader
+        :param pixelsize: pixel size in metres if required
+        """
         self.x = float(rowdata[1])
         self.y = float(rowdata[2])
         self.angle = float(rowdata[3])
@@ -78,7 +82,7 @@ class SFRPoint:
     def interpolate_fn(self):
         if self._interpolate_fn is None:
             # Build interpolation function from raw data
-            self._interpolate_fn = interpolate.InterpolatedUnivariateSpline(SFR_FREQUENCIES,
+            self._interpolate_fn = interpolate.InterpolatedUnivariateSpline(RAW_SFR_FREQUENCIES,
                                                                             self.raw_sfr_data, k=1)
         return self._interpolate_fn
 
@@ -121,6 +125,10 @@ class SFRPoint:
         raise AttributeError("Unknown axis attribute")
 
     def plot(self):
+        """
+        Plot spatial frequency response for point
+        :return: None
+        """
         x_range = np.arange(0, 1.0, 0.01)
         y_vals = [self.get_freq(x) for x in x_range]
         plt.plot(x_range, y_vals)
@@ -131,6 +139,7 @@ class SFRPoint:
                                                                                   self.y,
                                                                                   self.angle,
                                                                                   self.radialangle)
+
 
 class SFRField():
     """
@@ -152,13 +161,26 @@ class SFRField():
 
     @property
     def saggital_points(self):
+        """
+
+        :return: Returns list of all saggital edge points in field
+        """
         return [point for point in points if point.is_saggital]
 
     @property
     def meridional_points(self):
+        """
+
+        :return: Returns list of all meridional edge points in field
+        """
         return [point for point in points if not point.is_saggital]
 
     def get_subset(self, axis):
+        """
+        Returns list of all points on chosen axis (or both)
+        :param axis: constant SAGGITAL or MERIDIONAL or BOTH_AXES
+        :return: list of points
+        """
         return [point for point in points if point.is_axis(axis)]
 
     def get_avg_mtf50(self):
