@@ -1,0 +1,6 @@
+rawkit == 0.6.0
+imageio
+Pillow
+rawpy
+
+
