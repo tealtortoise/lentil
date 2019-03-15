@@ -20,7 +20,8 @@ numberrange = range(14, 24)
 PATH = '/mnt/mtfm/16-55mm/27mm f5.6/mtfmappertemp_{:.0f}/'
 numberrange = range(43, 52)
 sfrfilename = 'edge_sfr_values.txt'
-PATH = "/mnt/mtfm/23mm f1.4/Results/"
+PATH = "/mnt/mtfm/56mm/f2.8/mtfm/"
+PATH = '/mnt/mtfm/16-55mm/16mm f5.6/'
 
 SFR_HEADER = [
     'blockid',
@@ -41,6 +42,7 @@ class SFRPoint:
     """
     Holds all data for one SFR edge analysis point
     """
+
     def __init__(self, rowdata, pixelsize=None):
         """
         Processes row from csv reader
@@ -97,8 +99,10 @@ class SFRPoint:
 
         :return: MTF50 in cycles/px
         """
+
         def callable(fr):
             return self.interpolate_fn(fr) - 0.5
+
         if self._mtf50 is None:
             self._mtf50 = optimize.newton(callable, 0.05)
         return self._mtf50
@@ -114,6 +118,7 @@ class SFRPoint:
     def is_saggital(self):
         if self.radialangle < 45.0:
             return True
+
     @property
     def is_meridional(self):
         if self.radialangle > 45.0:
@@ -149,6 +154,7 @@ class SFRField():
     """
     Represents entire image field of SFRPoints for a single image
     """
+
     def __init__(self, points):
         """
 
@@ -279,11 +285,11 @@ class SFRField():
 
         # Build spline surface
         func = interpolate.SmoothBivariateSpline(x_arr, y_arr, z_arr, bbox=bbox,
-                                                w=weights, kx=order, ky=order, s=float("inf"))
+                                                 w=weights, kx=order, ky=order, s=float("inf"))
         output = func(x, y)  # Get (buried) interpolated value at point of interest
-        return output[0][0]  # Return scalar
+        return np.clip(output[0][0], 1e-5, 1.0)  # Return scalar
 
-    def plot(self, axis=BOTH_AXES, plot_type=0, detail=1.0):
+    def plot(self, freq=0.1, axis=BOTH_AXES, plot_type=1, detail=1.0):
         """
         Plots SFR/MTF values for chosen axis across field
 
@@ -292,13 +298,13 @@ class SFRField():
         :param detail: Relative detail in plot (1.0 is default)
         :return:
         """
-        x_values, y_values = self.build_axis_points(int(detail*20), int(detail*20))
+        x_values, y_values = self.build_axis_points(int(detail * 20), int(detail * 20))
         z_values = np.ndarray((len(y_values), len(x_values)))
 
         # fn = self.get_simple_interpolation_fn(axis)
         for x_idx, x in enumerate(x_values):
             for y_idx, y in enumerate(y_values):
-                z_values[y_idx, x_idx] = self.interpolate_value(x, y, axis)
+                z_values[y_idx, x_idx] = self.interpolate_value(x, y, freq, axis)
 
         if plot_type == 0:
             plt.figure()
@@ -331,7 +337,7 @@ class SFRField():
 
             for a in range(256):
                 mod = 0.5 - math.cos(a / 256 * math.pi) * 0.5
-                new_cmap[a, :] = my_cmap[int(mod*256), :]
+                new_cmap[a, :] = my_cmap[int(mod * 256), :]
 
             # my_col = plt.cm.jet(1.0 - z_values)
             # my_col[:, :, -1] = 0.85
@@ -348,6 +354,7 @@ class FocusSet:
     """
     A range of fields with stepped focus, in order
     """
+
     def __init__(self, filenames):
         self.fields = []
         for filename in filenames:
@@ -362,46 +369,123 @@ class FocusSet:
             field = SFRField(points)
             self.fields.append(field)
 
-    def plot_sfr_vs_focus(self, x, y, freq=-1, axis=BOTH_AXES, show=False):
+    def find_best_focus(self, x, y, freq, axis=BOTH_AXES, plot=False):
+        """
+        Get peak SFR at specified location and frequency vs focus, optionally plot.
+        This does not call (.show()) on the plot.
+
+        :param x: position in field
+        :param y: position in field
+        :param freq: frequency of interest (-1 for MTF50)
+        :param axis: MERIDIONAL or SAGGITAL or BOTH_AXES
+        :param plot: Draws plot if True
+        :return: Tuple (focus position of peak, height of peak)
+        """
+        # Get SFR from each field
         y_values = []
         for field in self.fields:
             y_values.append(field.interpolate_value(x, y, freq, axis))
-        x_values = np.arange(0, len(y_values), 1)
+        x_values = np.arange(0, len(y_values), 1)  # Arbitrary focus units
         y_values = np.array(y_values)
-        plt.plot(x_values, y_values, color='black')
-        weights = (y_values / np.max(y_values)) ** 4
+        if plot:
+            plt.plot(x_values, y_values)
 
-        y_values = np.array(y_values)
+        # Use quadratic spline as fitting curve
+
+        def fit_poly(polyx, polyy, w):
+            # fn = interpolate.UnivariateSpline(x_values, y_values, k=2, w=w)
+            poly = np.polyfit(polyx, polyy, 2, w=w)
+            peak_x = np.roots(np.polyder(poly, 1))[0]
+            peak_y = np.polyval(poly, peak_x)
+            return peak_x, peak_y, poly
+
+
+        weighting_power = max(0, 4 - np.exp(-len(x_values) / 20 + 1.4))
+        print("Weighting power {}".format(weighting_power))
+        # Plot weighting curve
+        # x = np.arange(1, 50)
+        # y = 4 - np.exp(-x / 20 + 1.4)
+        # plt.plot(x, y)
+        # plt.show();exit()
+
+        high_values = (y_values > (np.amax(y_values) * 0.7))
+        n_high_values = high_values.sum()
+        print("Dataset has {} high y_values".format(n_high_values))
+        # exit()
+
         plot_x = np.linspace(0, max(x_values), 100)
-        r = 0
-        if r:
-            mean_guess = np.argmax(y_values)
-            amplitude_guess = y_values[mean_guess] / 2.0
-            sigma_guess = 2.0
-            peaky = -amplitude_guess/20.0
-            print(amplitude_guess, mean_guess, sigma_guess, peaky)
 
-            def guassianfunc(xVar, a, b, c, a2=None):
-                if a2 is None:
-                    a2 = a
-                comp1 = a * np.exp(-(xVar - b) ** 2 / (4 * c ** 2))
-                comp2 = a2 * np.exp(-(xVar - b) ** 2 / (0.4 * c ** 2))
-                return (comp1 + comp2) # / (np.sum(a+a2))
+        # 1st stage
+        print(y_values)
+        weights = (y_values / np.max(y_values)) ** (weighting_power + 2)  # Favour values closer to maximum
+        p_peak_x, p_peak_y, poly_draft = fit_poly(x_values, y_values, weights)
+        print("1st stage peak is {:.3f} at {:.2f}".format(p_peak_y, p_peak_x))
+        if plot:
+            fitted_curve_plot_y_1 = np.clip(np.polyval(poly_draft, plot_x), 0.0, float("inf"))
+            plt.plot(plot_x, fitted_curve_plot_y_1, color='red')
 
-            fitted_params, _ = optimize.curve_fit(guassianfunc, x_values, y_values,
-                                                  p0=[amplitude_guess, mean_guess, sigma_guess])
-            print(fitted_params)
+        # 2nd stage, use only fields close to peak
+        closest_field_to_peak = int(p_peak_x + 0.5)
 
-            fitted_curve_plot_y = guassianfunc(plot_x, *fitted_params)
+        if n_high_values >= 3:
+            trimmed_x_values = x_values[high_values]
+            trimmed_y_values = y_values[high_values]
         else:
-            fn = interpolate.UnivariateSpline(x_values, y_values, k=2, w=weights)
-            fitted_curve_plot_y = np.clip(fn(plot_x), 0.0, float("inf"))
+            trim_low = max(0, closest_field_to_peak - 2)
+            trim_high = min(len(y_values), closest_field_to_peak + 3)
+            trimmed_x_values = x_values[trim_low: trim_high]
+            trimmed_y_values = y_values[trim_low: trim_high]
+        trimmed_weights = (trimmed_y_values / np.max(trimmed_y_values)) ** 5  # Favour values closer to maximum
 
-        plt.plot(plot_x, fitted_curve_plot_y, color='red')
+        p_peak_x, p_peak_y, poly = fit_poly(trimmed_x_values, trimmed_y_values, trimmed_weights)
+        print("2nd stage peak is {:.3f} at {:.2f}".format(p_peak_y, p_peak_x))
+        if plot:
+            fitted_curve_plot_y_2 = np.clip(np.polyval(poly, plot_x), 0.0, float("inf"))
+            plt.plot(plot_x, fitted_curve_plot_y_2, color='orange')
 
-        if show:
-            plt.show()
+        if n_high_values < 3:
+            # 3rd Stage, fit gaussians
+            # Use sum of two co-incident gaussians as fitting curve
 
+            print("Only {} high values, using guassian fit".format(n_high_values))
+
+            def twogauss(gaussx, a, b, c, peaky):
+                const = 0
+                a1 = 1 / (1 + peaky)
+                a2 = peaky / (1 + peaky)
+                c1 = c / 1.5
+                c2 = c * 1.5
+                wide = a1 * np.exp(-(gaussx - b) ** 2 / (2 * c1 ** 2))
+                narrow = a2 * np.exp(-(gaussx - b) ** 2 / (2 * c2 ** 2))
+                both = (wide + narrow) * a
+                return both * (1-const) + const
+
+            mean_guess = p_peak_x
+            sigma_guess = 2.0
+
+            bounds = ((p_peak_y * 0.95, p_peak_x - 0.05, 0.1, -0.1),
+                      (p_peak_y * 1.15, p_peak_x + 0.05, 50,   0.1))
+
+            sigmas = (np.max(y_values) / y_values) ** weighting_power
+
+            # plt.plot(x_values, sigmas)
+            fitted_params, _ = optimize.curve_fit(twogauss, x_values, y_values, bounds=bounds, sigma=sigmas,
+                                                  p0=(p_peak_y, p_peak_x, sigma_guess, 0.1))
+            print("3rd stage peak is {:.3f} at {:.2f}".format(fitted_params[0], fitted_params[1]))
+            print("Gaussian sigma: {:.3f}, peaky {:.3f}".format(*fitted_params[2:]))
+
+            if plot:
+                fitted_curve_plot_y_3 = twogauss(plot_x, *fitted_params)
+                plt.plot(plot_x, fitted_curve_plot_y_3, color='green')
+            g_peak_x = fitted_params[1]
+            g_peak_y = fitted_params[0]
+
+            final_peak_x = (p_peak_x + g_peak_x) / 2.0
+            final_peak_y = (p_peak_y + g_peak_y) / 2.0
+        else:
+            final_peak_x = p_peak_x
+            final_peak_y = p_peak_y
+        return final_peak_x - y/2500, final_peak_y
 
 imagedirs = os.listdir(PATH)
 filenames = []
@@ -411,11 +495,24 @@ for dir in imagedirs:
         filenames.append(filename)
 
 focusset = FocusSet(filenames)
+# print(focusset.fields[2].interpolate_value(4000, 2000, 0.2, axis =MERIDIONAL));exit()
+# print(focusset.fields[2].plot(axis=MERIDIONAL)); exit()
 axis = SAGGITAL
-focusset.plot_sfr_vs_focus(4000, 2000, -1, axis)
-focusset.plot_sfr_vs_focus(2000, 2000, -1, axis, show=True)
+sag = []
+mer = []
+x_rng = range(100, 3900, 200)
+for x in x_rng:
+    focuspos, sharpness = focusset.find_best_focus(3000, x, 0.04, SAGGITAL)
+    sag.append(focuspos)
+    focuspos, sharpness = focusset.find_best_focus(3000, x, 0.04, MERIDIONAL)
+    mer.append(focuspos)
+
+plt.plot(x_rng, sag)
+plt.plot(x_rng, mer)
+plt.show(); exit()
+focusset = FocusSet(filenames[1::2])
+focusset.find_best_focus(1400, 2000, 0.1, axis, plot=True)
+plt.show()
 
 # field.plot(SAGGITAL, 1, detail=1.5)
 # field.plot(MERIDIONAL, 1, detail=1.5)
-
-
