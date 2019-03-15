@@ -508,6 +508,8 @@ for dir in imagedirs:
         filenames.append(filename)
 
 focusset = FocusSet(filenames)
+focusset.fields[7].plot(0.14, MERIDIONAL)
+exit()
 # print(focusset.fields[2].interpolate_value(4000, 2000, 0.2, axis =MERIDIONAL));exit()
 # print(focusset.fields[2].plot(axis=MERIDIONAL)); exit()
 axis = SAGGITAL
