@@ -21,7 +21,7 @@ PATH = '/mnt/mtfm/16-55mm/27mm f5.6/mtfmappertemp_{:.0f}/'
 numberrange = range(43, 52)
 sfrfilename = 'edge_sfr_values.txt'
 PATH = "/mnt/mtfm/56mm/f2.8/mtfm/"
-PATH = '/mnt/mtfm/16-55mm/16mm f5.6/'
+# PATH = '/mnt/mtfm/16-55mm/16mm f5.6/'
 
 SFR_HEADER = [
     'blockid',
@@ -36,6 +36,10 @@ SFR_HEADER = [
 # imageio.imsave(path+rawfile+'rawpy.png', rgb, )
 
 RAW_SFR_FREQUENCIES = [x / 64 for x in range(64)]  # List of sfr frequencies in cycles/pixel
+
+
+def diffraction_mtf(freq):
+    return 2.0 / np.pi * (np.arccos(freq) - freq * (1 - freq ** 2) ** 0.5)
 
 
 class SFRPoint:
@@ -414,6 +418,7 @@ class FocusSet:
         # exit()
 
         plot_x = np.linspace(0, max(x_values), 100)
+        plot_x_wide = np.linspace(-5, max(x_values) +5, 100)
 
         # 1st stage
         print(y_values)
@@ -438,54 +443,62 @@ class FocusSet:
         trimmed_weights = (trimmed_y_values / np.max(trimmed_y_values)) ** 5  # Favour values closer to maximum
 
         p_peak_x, p_peak_y, poly = fit_poly(trimmed_x_values, trimmed_y_values, trimmed_weights)
+
+        # fitted_curve_plot_y_2 = np.clip(np.polyval(poly, plot_x_wide), 0.0, float("inf"))
+        # plt.plot(plot_x_wide, fitted_curve_plot_y_2, color='orange')
+
+        poly[2] -= p_peak_y * diffraction_mtf(freq)
+        fitted_curve_plot_y_2 = np.clip(np.polyval(poly, plot_x_wide), 0.0, float("inf"))
+        acceptable_focus_roots = np.roots(poly)
+        # print(acceptable_focus_roots, 999)
+        # plt.plot(plot_x_wide, fitted_curve_plot_y_2, color='blue')
+        # plt.show()
+        # print(poly);exit()
+
         print("2nd stage peak is {:.3f} at {:.2f}".format(p_peak_y, p_peak_x))
         if plot:
             fitted_curve_plot_y_2 = np.clip(np.polyval(poly, plot_x), 0.0, float("inf"))
             plt.plot(plot_x, fitted_curve_plot_y_2, color='orange')
+
+        def twogauss(gaussx, a, b, c, peaky):
+            const = 0
+            a1 = 1 / (1 + peaky)
+            a2 = peaky / (1 + peaky)
+            c1 = c / 1.5
+            c2 = c * 1.5
+            wide = a1 * np.exp(-(gaussx - b) ** 2 / (2 * c1 ** 2))
+            narrow = a2 * np.exp(-(gaussx - b) ** 2 / (2 * c2 ** 2))
+            both = (wide + narrow) * a
+            return both * (1-const) + const
+
+        bounds = ((p_peak_y * 0.95, p_peak_x - 0.05, 0.1, -0.1),
+                  (p_peak_y * 1.15, p_peak_x + 0.05, 50,   0.1))
+
+        sigmas = (np.max(y_values) / y_values) ** weighting_power
+
+        # plt.plot(x_values, sigmas)
+        fitted_params, _ = optimize.curve_fit(twogauss, x_values, y_values, bounds=bounds, sigma=sigmas,
+                                              p0=(p_peak_y, p_peak_x, 1.0, 0.1))
+        print("3rd stage peak is {:.3f} at {:.2f}".format(fitted_params[0], fitted_params[1]))
+        print("Gaussian sigma: {:.3f}, peaky {:.3f}".format(*fitted_params[2:]))
+
+        if plot:
+            fitted_curve_plot_y_3 = twogauss(plot_x, *fitted_params)
+            plt.plot(plot_x, fitted_curve_plot_y_3, color='green')
+        g_peak_x = fitted_params[1]
+        g_peak_y = fitted_params[0]
 
         if n_high_values < 3:
             # 3rd Stage, fit gaussians
             # Use sum of two co-incident gaussians as fitting curve
 
             print("Only {} high values, using guassian fit".format(n_high_values))
-
-            def twogauss(gaussx, a, b, c, peaky):
-                const = 0
-                a1 = 1 / (1 + peaky)
-                a2 = peaky / (1 + peaky)
-                c1 = c / 1.5
-                c2 = c * 1.5
-                wide = a1 * np.exp(-(gaussx - b) ** 2 / (2 * c1 ** 2))
-                narrow = a2 * np.exp(-(gaussx - b) ** 2 / (2 * c2 ** 2))
-                both = (wide + narrow) * a
-                return both * (1-const) + const
-
-            mean_guess = p_peak_x
-            sigma_guess = 2.0
-
-            bounds = ((p_peak_y * 0.95, p_peak_x - 0.05, 0.1, -0.1),
-                      (p_peak_y * 1.15, p_peak_x + 0.05, 50,   0.1))
-
-            sigmas = (np.max(y_values) / y_values) ** weighting_power
-
-            # plt.plot(x_values, sigmas)
-            fitted_params, _ = optimize.curve_fit(twogauss, x_values, y_values, bounds=bounds, sigma=sigmas,
-                                                  p0=(p_peak_y, p_peak_x, sigma_guess, 0.1))
-            print("3rd stage peak is {:.3f} at {:.2f}".format(fitted_params[0], fitted_params[1]))
-            print("Gaussian sigma: {:.3f}, peaky {:.3f}".format(*fitted_params[2:]))
-
-            if plot:
-                fitted_curve_plot_y_3 = twogauss(plot_x, *fitted_params)
-                plt.plot(plot_x, fitted_curve_plot_y_3, color='green')
-            g_peak_x = fitted_params[1]
-            g_peak_y = fitted_params[0]
-
             final_peak_x = (p_peak_x + g_peak_x) / 2.0
             final_peak_y = (p_peak_y + g_peak_y) / 2.0
         else:
             final_peak_x = p_peak_x
             final_peak_y = p_peak_y
-        return final_peak_x - y/2500, final_peak_y
+        return final_peak_x, final_peak_y, acceptable_focus_roots[0], acceptable_focus_roots[1]
 
 imagedirs = os.listdir(PATH)
 filenames = []
@@ -498,20 +511,33 @@ focusset = FocusSet(filenames)
 # print(focusset.fields[2].interpolate_value(4000, 2000, 0.2, axis =MERIDIONAL));exit()
 # print(focusset.fields[2].plot(axis=MERIDIONAL)); exit()
 axis = SAGGITAL
-sag = []
-mer = []
-x_rng = range(100, 3900, 200)
-for x in x_rng:
-    focuspos, sharpness = focusset.find_best_focus(3000, x, 0.04, SAGGITAL)
-    sag.append(focuspos)
-    focuspos, sharpness = focusset.find_best_focus(3000, x, 0.04, MERIDIONAL)
-    mer.append(focuspos)
 
-plt.plot(x_rng, sag)
-plt.plot(x_rng, mer)
+# focusset = FocusSet(filenames)
+# focusset.find_best_focus(1400, 2000, 0.1, axis, plot=True)
+sag = []
+sagl = []
+sagh = []
+mer = []
+merl = []
+merh = []
+x_rng = range(100, 5900, 200)
+for x in x_rng:
+    focuspos, sharpness, l, h = focusset.find_best_focus(x, x*2/3, 0.14, SAGGITAL)
+    sag.append(focuspos)
+    sagl.append(l)
+    sagh.append(h)
+    focuspos, sharpness, l, h = focusset.find_best_focus(x, x*2/3, 0.14, MERIDIONAL)
+    mer.append(focuspos)
+    merl.append(l)
+    merh.append(h)
+
+plt.plot(x_rng, sag, color='green')
+plt.plot(x_rng, sagl, '--', color='green')
+plt.plot(x_rng, sagh, '--', color='green')
+plt.plot(x_rng, mer, color='blue')
+plt.plot(x_rng, merl, '--', color='blue')
+plt.plot(x_rng, merh, '--', color='blue')
 plt.show(); exit()
-focusset = FocusSet(filenames[1::2])
-focusset.find_best_focus(1400, 2000, 0.1, axis, plot=True)
 plt.show()
 
 # field.plot(SAGGITAL, 1, detail=1.5)
