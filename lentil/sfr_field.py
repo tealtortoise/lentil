@@ -149,7 +149,7 @@ class SFRField():
         output = func(x, y)  # Get (buried) interpolated value at point of interest
         return np.clip(output[0][0], 1e-5, 1.0)  # Return scalar
 
-    def plot(self, freq=0.1, axis=BOTH_AXES, plot_type=1, detail=1.0):
+    def plot(self, freq=0.1, axis=BOTH_AXES, plot_type=1, detail=1.0, show=True, ax=None):
         """
         Plots SFR/MTF values for chosen axis across field
 
@@ -178,9 +178,9 @@ class SFRField():
             plt.title('Simplest default with labels')
         else:
             fig = plt.figure()
-            ax = fig.add_subplot(111, projection='3d')
-
-            ax.set_zlim(0.0, 1.0)
+            if ax is None:
+                ax = fig.add_subplot(111, projection='3d')
+                ax.set_zlim(0.0, 1.0)
             # ax.zaxis.set_major_locator(LinearLocator(10))
             # ax.zaxis.set_major_formatter(FormatStrFormatter('%.02f'))
 
@@ -207,4 +207,6 @@ class SFRField():
             surf = ax.plot_surface(x, y, z_values, cmap=mycmap, norm=norm,
                                    rstride=1, cstride=1, linewidth=1, antialiased=True)
             fig.colorbar(surf, shrink=0.5, aspect=5)
-        plt.show()
+        if show:
+            plt.show()
+        return ax

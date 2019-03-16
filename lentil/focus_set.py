@@ -10,7 +10,7 @@ from scipy import optimize
 
 from lentil.sfr_point import SFRPoint
 from lentil.sfr_field import SFRField
-from lentil.constants_utils import BOTH_AXES, diffraction_mtf
+from lentil.constants_utils import *
 
 
 class FocusSet:
@@ -32,18 +32,40 @@ class FocusSet:
             field = SFRField(points)
             self.fields.append(field)
 
-    def plot_ideal_focus_field(self, freq, axis=BOTH_AXES, plot_type=1):
-        x_values, y_values = self.fields[0].build_axis_points(24, 16)
+    def plot_ideal_focus_field(self, freq=0.1, detail=1.0, axis=BOTH_AXES, color=None,
+                               plot_curvature=False, plot_type=1, show=True, ax=None):
+        """
+        Plots peak sharpness at each point in field across all focus
+
+        :param freq: Frequency of interest in cy/px (-1 for MTF50)
+        :param detail: Alters number of points in plot (relative to 1.0)
+        :param axis: SAGGITAL or MERIDIONAL or BOTH_AXES
+        :param plot_type: 0 is 2d, 1 is 3d
+        :param show: Displays plot if True
+        :param ax: Pass existing matplotlib axis to use
+        :return: matplotlib axis for reuse
+        """
+        x_values, y_values = self.fields[0].build_axis_points(24*detail, 16*detail)
         z_values = np.ndarray((len(y_values), len(x_values)))
+        if plot_curvature:
+            z_values_low = z_values.copy()
+            z_values_high = z_values.copy()
 
         # fn = self.get_simple_interpolation_fn(axis)
         for x_idx, x in enumerate(x_values):
             for y_idx, y in enumerate(y_values):
-                _, peak, _, _ = self.find_best_focus(x, y, freq, BOTH_AXES)
+                if plot_curvature:
+
+                    peak, _, low, high = self.find_best_focus(x, y, freq, axis)
+                else:
+                    _, peak, _, _ = self.find_best_focus(x, y, freq, axis)
                 # _, peak_m, _, _ = self.find_best_focus(x, y, freq, MERIDIONAL)
                 # _, peak_s, _, _ = self.find_best_focus(x, y, freq, SAGGITAL)
                 # z_values[y_idx, x_idx] = (peak_m + peak_s) / 2.0
                 z_values[y_idx, x_idx] = peak
+                if plot_curvature:
+                    z_values_low[y_idx, x_idx] = low
+                    z_values_high[y_idx, x_idx] = high
 
         if plot_type == 0:
             plt.figure()
@@ -57,9 +79,11 @@ class FocusSet:
             plt.title('Simplest default with labels')
         else:
             fig = plt.figure()
-            ax = fig.add_subplot(111, projection='3d')
-
-            ax.set_zlim(0.0, 1.0)
+            passed_ax = ax
+            if ax is None:
+                ax = fig.add_subplot(111, projection='3d')
+                if not plot_curvature:
+                    ax.set_zlim(0.0, 1.0)
             # ax.zaxis.set_major_locator(LinearLocator(10))
             # ax.zaxis.set_major_formatter(FormatStrFormatter('%.02f'))
 
@@ -68,27 +92,50 @@ class FocusSet:
             print(y.flatten().shape)
             print(z_values.shape)
 
-            cmap = plt.cm.winter  # Base colormap
-            my_cmap = cmap(np.arange(cmap.N))  # Read colormap colours
-            my_cmap[:, -1] = 0.85  # Set colormap alpha
-            # print(my_cmap[1,:].shape);exit()
-            new_cmap = np.ndarray((256, 4))
 
-            for a in range(256):
-                mod = 0.5 - math.cos(a / 256 * math.pi) * 0.5
-                new_cmap[a, :] = my_cmap[int(mod * 256), :]
+            if plot_curvature:
+                num_sheets = 1
+                offsets = []
+                for n in range(num_sheets):
+                    offsets.append(z_values * (n/num_sheets) + z_values_low * (1 - (n/num_sheets)))
 
-            # my_col = plt.cm.jet(1.0 - z_values)
-            # my_col[:, :, -1] = 0.85
+                for n in range(num_sheets+1):
+                    offsets.append(z_values_high * (n/num_sheets) + z_values * (1 - (n/num_sheets)))
 
-            mycmap = ListedColormap(new_cmap)
-            norm = matplotlib.colors.Normalize(vmin=0, vmax=1)
-            surf = ax.plot_surface(x, y, z_values, cmap=mycmap, norm=norm,
-                                   rstride=1, cstride=1, linewidth=1, antialiased=True)
-            fig.colorbar(surf, shrink=0.5, aspect=5)
-        plt.show()
+                sheet_nums = np.linspace(-1, 1, len(offsets))
+            else:
+                offsets = [z_values]
+            for sheet_num, offset in zip(sheet_nums, offsets):
 
-    def find_best_focus(self, x, y, freq, axis=BOTH_AXES, plot=False, strict=True):
+                cmap = plt.cm.winter  # Base colormap
+                my_cmap = cmap(np.arange(cmap.N))  # Read colormap colours
+                my_cmap[:, -1] = 0.52 - (sheet_num ** 2) ** 0.5 * 0.5  # Set colormap alpha
+                # print(my_cmap[1,:].shape);exit()
+                new_cmap = np.ndarray((256, 4))
+
+                new_color = [color[0], color[1], color[2], 0.5 - (sheet_num ** 2) ** 0.5 * 0.4]
+                new_facecolor = [color[0], color[1], color[2], 0.3 - (sheet_num ** 2) ** 0.5 * 0.24]
+
+
+                for a in range(256):
+                    mod = 0.5 - math.cos(a / 256 * math.pi) * 0.5
+                    new_cmap[a, :] = my_cmap[int(mod * 256), :]
+
+                mycmap = ListedColormap(new_cmap)
+                if plot_curvature:
+                    norm = None
+                else:
+                    norm = matplotlib.colors.Normalize(vmin=0, vmax=1)
+
+                surf = ax.plot_surface(x, y, z_values+offset, color=new_facecolor, norm=norm, edgecolors=new_color,
+                                       rstride=1, cstride=1, linewidth=1, antialiased=True)
+            if passed_ax is None:
+                pass# fig.colorbar(surf, shrink=0.5, aspect=5)
+        if show:
+            plt.show()
+        return ax
+
+    def find_best_focus(self, x, y, freq, axis=BOTH_AXES, plot=False, strict=False):
         """
         Get peak SFR at specified location and frequency vs focus, optionally plot.
         This does not call (.show()) on the plot.
@@ -126,7 +173,7 @@ class FocusSet:
         # plt.plot(x, y)
         # plt.show();exit()
 
-        high_values = (y_values > (np.amax(y_values) * 0.7))
+        high_values = (y_values > (np.amax(y_values) * 0.75))
         n_high_values = high_values.sum()
         print("Dataset has {} high y_values".format(n_high_values))
         # exit()
@@ -169,6 +216,10 @@ class FocusSet:
         if strict and not 0.0 < p_peak_x < x_values[-1]:
             raise Exception("Focus peak appears to be out of range, strict=True")
         if not -0.5 < p_peak_x < (x_values[-1] + 0.5):
+            print(x, y)
+            plt.plot(x_values, y_values)
+            plt.plot(trimmed_x_values, trimmed_y_values)
+            plt.show()
             raise Exception("Focus peak appears to be out of range, strict=False")
 
         if plot:
@@ -215,3 +266,34 @@ class FocusSet:
             final_peak_x = p_peak_x
             final_peak_y = p_peak_y
         return final_peak_x, final_peak_y, acceptable_focus_roots[0], acceptable_focus_roots[1]
+
+
+    def plot_field_curvature_strip(self, freq, show=True):
+
+        sag = []
+        sagl = []
+        sagh = []
+        mer = []
+        merl = []
+        merh = []
+        x_rng = range(100, 5900, 200)
+        for n in x_rng:
+            x = n
+            y = 4000- n*2/3
+            focuspos, sharpness, l, h = self.find_best_focus(x, y, freq, SAGGITAL)
+            sag.append(focuspos)
+            sagl.append(l)
+            sagh.append(h)
+            focuspos, sharpness, l, h = self.find_best_focus(x, y, freq, MERIDIONAL)
+            mer.append(focuspos)
+            merl.append(l)
+            merh.append(h)
+
+        plt.plot(x_rng, sag, color='green')
+        plt.plot(x_rng, sagl, '--', color='green')
+        plt.plot(x_rng, sagh, '--', color='green')
+        plt.plot(x_rng, mer, color='blue')
+        plt.plot(x_rng, merl, '--', color='blue')
+        plt.plot(x_rng, merh, '--', color='blue')
+        if show:
+            plt.show()
