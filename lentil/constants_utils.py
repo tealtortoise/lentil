@@ -1,7 +1,7 @@
 import numpy as np
 
 DEFAULT_PIXEL_SIZE = 4e-6
-SAGGITAL = 1
+SAGITTAL = 1
 MERIDIONAL = 2
 BOTH_AXES = 3
 SFR_HEADER = [

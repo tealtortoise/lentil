@@ -7,7 +7,7 @@ from matplotlib import pyplot as plt
 from matplotlib.colors import ListedColormap
 from scipy import interpolate
 
-from lentil.constants_utils import BOTH_AXES
+from lentil.constants_utils import *
 
 
 class SFRField():
@@ -105,7 +105,7 @@ class SFRField():
         :param freq: spacial frequency to return, -1 for mtf50
         :return: interpolated cy/px at specified frequency, or mtf50 frequency if -1 passed
         """
-        if self.np_x is None or self.np_axis != axis:
+        if self.np_x is None or self.np_axis != axis or self.np_sfr_freq != freq:
             lst = []
             for point in self.get_subset(axis):
                 lst.append((point.x, point.y, point.get_freq(freq)))
@@ -117,6 +117,7 @@ class SFRField():
             self.np_y = y_arr
             self.np_mtf = z_arr
             self.np_axis = axis
+            self.np_sfr_freq = freq
         x_arr = self.np_x
         y_arr = self.np_y
         z_arr = self.np_mtf
@@ -210,3 +211,24 @@ class SFRField():
         if show:
             plt.show()
         return ax
+
+    def plot_points(self, freq=0.05, axis=BOTH_AXES):
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        ax.set_zlim(0, 1)
+
+        if axis == BOTH_AXES:
+            axis = (SAGITTAL, MERIDIONAL)
+        else:
+            axis = (axis,)
+        for axis_ in axis:
+            lst = []
+            for point in self.get_subset(axis_):
+                lst.append((point.x, point.y, point.get_freq(freq)))
+            x_arr, y_arr, z_arr = zip(*lst)
+            x_arr = np.array(x_arr)
+            y_arr = np.array(y_arr)
+            z_arr = np.array(z_arr)
+            colours = np.array([z_arr, z_arr, z_arr, z_arr]).T
+            ax.scatter(x_arr, y_arr, z_arr, c='r' if axis is SAGITTAL else 'b', marker='.')
+        plt.show()

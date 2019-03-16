@@ -93,7 +93,7 @@ class SFRPoint:
             return True
 
     def is_axis(self, axis):
-        if axis == lentil.constants_utils.SAGGITAL:
+        if axis == lentil.constants_utils.SAGITTAL:
             return self.is_saggital
         if axis == lentil.constants_utils.MERIDIONAL:
             return self.is_meridional
