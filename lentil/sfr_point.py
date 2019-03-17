@@ -111,10 +111,29 @@ class SFRPoint:
         plt.plot(x_range, y_vals)
         plt.show()
 
+    def is_match_to(self, pointb):
+        X_TOL = Y_TOL = 20
+        SFR_TOL = 0.03
+        match = True
+        x_dif = abs(self.x - pointb.x)
+        y_dif = abs(self.y - pointb.y)
+        angle_dif = abs(self.angle - pointb.angle)
+        radang_dif = abs(self.radialangle - pointb.radialangle)
+        sfrsum = 0
+        for a, b in zip(self.raw_sfr_data[:24], pointb.raw_sfr_data[:24]):
+            sfrsum += abs(a - b)
+        return x_dif, y_dif, angle_dif, radang_dif, sfrsum
+
+        if abs(pointb.x - self.x) > X_TOL:
+            return False
+        if abs(pointb.y - self.y) > Y_TOL:
+            return False
+        if abs(pointb.y - self.y) > Y_TOL:
+            return False
+
     def __str__(self):
         return "x: {:.0f}, y: {:.0f}, angle: {:.0f}, radial angle: {:.0f}".format(self.x,
                                                                                   self.y,
                                                                                   self.angle,
                                                                                   self.radialangle)
 
-    

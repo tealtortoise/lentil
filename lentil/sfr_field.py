@@ -21,12 +21,15 @@ class SFRField():
         :param points: Iterable of SFRPoints, order not important
         """
         self.points = points
-        self.np_x = None
-        self.np_y = None
-        self.np_sfr = None
-        self.np_sfr_freq = None
-        self.np_mtf = None
-        self.np_axis = None
+        np_axis = {}
+        np_axis['np_x'] = None
+        np_axis['np_y'] = None
+        np_axis['np_sfr'] = None
+        np_axis['np_sfr_freq'] = None
+        np_axis['np_mtf'] = None
+        np_axis2 = np_axis.copy()
+        self.np_dict = {SAGITTAL: np_axis, MERIDIONAL: np_axis2}
+
         self.smoothing = 0.5
 
     @property
@@ -35,7 +38,7 @@ class SFRField():
 
         :return: Returns list of all saggital edge points in field
         """
-        return [point for point in points if point.is_saggital]
+        return [point for point in self.points if point.is_saggital]
 
     @property
     def meridional_points(self):
@@ -43,7 +46,7 @@ class SFRField():
 
         :return: Returns list of all meridional edge points in field
         """
-        return [point for point in points if not point.is_saggital]
+        return [point for point in self.points if not point.is_saggital]
 
     def get_subset(self, axis):
         """
@@ -105,7 +108,7 @@ class SFRField():
         :param freq: spacial frequency to return, -1 for mtf50
         :return: interpolated cy/px at specified frequency, or mtf50 frequency if -1 passed
         """
-        if self.np_x is None or self.np_axis != axis or self.np_sfr_freq != freq:
+        if self.np_dict[axis]['np_x'] is None or self.np_dict[axis]['np_sfr_freq'] != freq:
             lst = []
             for point in self.get_subset(axis):
                 lst.append((point.x, point.y, point.get_freq(freq)))
@@ -113,14 +116,13 @@ class SFRField():
             x_arr = np.array(x_arr)
             y_arr = np.array(y_arr)
             z_arr = np.array(z_arr)
-            self.np_x = x_arr
-            self.np_y = y_arr
-            self.np_mtf = z_arr
-            self.np_axis = axis
-            self.np_sfr_freq = freq
-        x_arr = self.np_x
-        y_arr = self.np_y
-        z_arr = self.np_mtf
+            self.np_dict[axis]['np_x'] = x_arr
+            self.np_dict[axis]['np_y'] = y_arr
+            self.np_dict[axis]['np_mtf'] = z_arr
+            self.np_dict[axis]['np_sfr_freq'] = freq
+        x_arr = self.np_dict[axis]['np_x']
+        y_arr = self.np_dict[axis]['np_y']
+        z_arr = self.np_dict[axis]['np_mtf']
 
         # Calculate distance of each edge location to input location on each axis
         x_distances = (x_arr - x)

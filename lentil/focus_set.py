@@ -6,7 +6,7 @@ import matplotlib
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.colors import ListedColormap
-from scipy import optimize, interpolate
+from scipy import optimize, interpolate, stats
 
 from lentil.sfr_point import SFRPoint
 from lentil.sfr_field import SFRField
@@ -33,7 +33,7 @@ class FocusSet:
             self.fields.append(field)
 
     def plot_ideal_focus_field(self, freq=0.1, detail=1.0, axis=BOTH_AXES, color=None,
-                               plot_curvature=False, plot_type=1, show=True, ax=None, skewplane=False):
+                               plot_curvature=False, plot_type=1, show=True, ax=None, skewplane=False, alpha=0.7):
         """
         Plots peak sharpness at each point in field across all focus
 
@@ -48,6 +48,8 @@ class FocusSet:
         x_values, y_values = self.fields[0].build_axis_points(24*detail, 16*detail)
         z_values = np.ndarray((len(y_values), len(x_values)))
         if plot_curvature:
+            sharps = z_values.copy()
+            colours = z_values.copy()
             z_values_low = z_values.copy()
             z_values_high = z_values.copy()
 
@@ -56,7 +58,7 @@ class FocusSet:
             for y_idx, y in enumerate(y_values):
                 if plot_curvature:
 
-                    peak, _, low, high = self.find_best_focus(x, y, freq, axis)
+                    peak, sharp, low, high = self.find_best_focus(x, y, freq, axis)
                 else:
                     _, peak, _, _ = self.find_best_focus(x, y, freq, axis)
                 # _, peak_m, _, _ = self.find_best_focus(x, y, freq, MERIDIONAL)
@@ -64,6 +66,7 @@ class FocusSet:
                 # z_values[y_idx, x_idx] = (peak_m + peak_s) / 2.0
                 z_values[y_idx, x_idx] = peak
                 if plot_curvature:
+                    sharps[y_idx, x_idx] = sharp
                     z_values_low[y_idx, x_idx] = low
                     z_values_high[y_idx, x_idx] = high
 
@@ -94,12 +97,15 @@ class FocusSet:
             plt.clabel(CS, inline=1, fontsize=10)
             plt.title('Simplest default with labels')
         else:
-            fig = plt.figure()
+            if ax is None:
+                fig = plt.figure()
             passed_ax = ax
+
             if ax is None:
                 ax = fig.add_subplot(111, projection='3d')
                 if not plot_curvature:
                     ax.set_zlim(0.0, 1.0)
+            ax.set_ylim(np.amax(y_values), np.amin(y_values))
             # ax.zaxis.set_major_locator(LinearLocator(10))
             # ax.zaxis.set_major_formatter(FormatStrFormatter('%.02f'))
 
@@ -108,7 +114,7 @@ class FocusSet:
             print(y.flatten().shape)
             print(z_values.shape)
 
-            NUM_SHEETS = 1
+            NUM_SHEETS = 0
             if plot_curvature and NUM_SHEETS > 0:
                 sheets = []
                 for n in range(NUM_SHEETS):
@@ -124,7 +130,7 @@ class FocusSet:
                 sheet_nums = [0]
             for sheet_num, sheet in zip(sheet_nums, sheets):
 
-                cmap = plt.cm.winter  # Base colormap
+                cmap = plt.cm.jet  # Base colormap
                 my_cmap = cmap(np.arange(cmap.N))  # Read colormap colours
                 my_cmap[:, -1] = 0.52 - (sheet_num ** 2) ** 0.5 * 0.5  # Set colormap alpha
                 # print(my_cmap[1,:].shape);exit()
@@ -133,6 +139,17 @@ class FocusSet:
                 new_color = [color[0], color[1], color[2], 0.5 - (sheet_num ** 2) ** 0.5 * 0.4]
                 new_facecolor = [color[0], color[1], color[2], 0.3 - (sheet_num ** 2) ** 0.5 * 0.24]
 
+                low_perf = diffraction_mtf(min(1.0, freq * 5))
+                high_perf = diffraction_mtf(min(1.0, freq * 1.2))
+                # print(low_perf, high_perf)
+                new_facecolor = plt.cm.jet(np.clip(1.0 - ((sharps - low_perf) / (high_perf - low_perf)), 0.0, 1.0))  # linear gradient along the t-axis
+                new_edgecolor = 'b'
+                new_facecolor[:,:,3] = alpha
+                # new_color = new_facecolor = np.repeat(col1[np.newaxis, :, :], z_values.shape[0], axis=0)  # expand over the theta-    axis
+                # print(col1);print(col1.shape);exit()
+                # print(z_values.shape)
+                # print(new_facecolor)
+                # print(new_facecolor.shape);exit()
 
                 for a in range(256):
                     mod = 0.5 - math.cos(a / 256 * math.pi) * 0.5
@@ -144,7 +161,7 @@ class FocusSet:
                 else:
                     norm = matplotlib.colors.Normalize(vmin=0, vmax=1)
 
-                surf = ax.plot_surface(x, y, sheet, color=new_facecolor, norm=norm, edgecolors=new_color,
+                surf = ax.plot_surface(x, y, sheet, facecolors=new_facecolor, norm=norm, edgecolors=new_edgecolor,
                                        rstride=1, cstride=1, linewidth=1, antialiased=True)
             if passed_ax is None:
                 pass# fig.colorbar(surf, shrink=0.5, aspect=5)
@@ -158,16 +175,31 @@ class FocusSet:
         This does not call (.show()) on the plot.
 
         :param x: position in field
-        :param y: position in field
         :param freq: frequency of interest (-1 for MTF50)
         :param axis: MERIDIONAL or SAGGITAL or BOTH_AXES
         :param plot: Draws plot if True
         :return: Tuple (focus position of peak, height of peak)
         """
+
+        if axis == BOTH_AXES:
+            sag_x, sag_y, _, _ = self.find_best_focus(x, y, freq, SAGITTAL)
+            mer_x, mer_y, _, _ = self.find_best_focus(x, y, freq, MERIDIONAL)
+            mid = (sag_x + mer_x) * 0.5
+            prop = mid - math.floor(mid)
+            sag_midpeak = self.fields[int(mid)].interpolate_value(x, y, freq, SAGITTAL) * (1-prop) + \
+                            self.fields[int(mid + 1)].interpolate_value(x, y, freq, SAGITTAL) * prop
+            mer_midpeak = self.fields[int(mid)].interpolate_value(x, y, freq, MERIDIONAL) * (1-prop) + \
+                            self.fields[int(mid + 1)].interpolate_value(x, y, freq, MERIDIONAL) * prop
+            midpeak = ((sag_midpeak + mer_midpeak)*0.5)
+
+            print( mid, midpeak)
+            return mid, midpeak, midpeak, midpeak
+
         # Get SFR from each field
         y_values = []
         for field in self.fields:
             y_values.append(field.interpolate_value(x, y, freq, axis))
+
         x_values = np.arange(0, len(y_values), 1)  # Arbitrary focus units
         y_values = np.array(y_values)
         if plot:
@@ -218,7 +250,7 @@ class FocusSet:
             trimmed_x_values = x_values[trim_low: trim_high]
             trimmed_y_values = y_values[trim_low: trim_high]
 
-        if len(trimmed_y_values) < 3:
+        if len(trimmed_y_values) < 3 or not 0 < closest_field_to_peak < (len(y_values) - 1):
             if not strict:
                 # print(x, y)
                 # plt.plot(x_values, y_values)
@@ -330,3 +362,46 @@ class FocusSet:
         plt.plot(x_rng, merh, '--', color='blue')
         if show:
             plt.show()
+
+    def remove_duplicated_fields(self, plot=False, train=[]):
+        fields = self.fields[:]
+        prev = fields[0].points
+        new_fields = [fields[0]]
+        tuplist = []
+        for n, field in enumerate(fields[1:]):
+            tuplist=[]
+            dup = (n+1) in train
+            for pointa, pointb in zip(prev, field.points):
+                tup = pointa.is_match_to(pointb)
+                tuplist.append([dup] + [n + 1] + list(tup))
+            prev = field.points
+            tuplist = np.array(tuplist)
+            duplikely = np.percentile(tuplist[:,6], 80) < 0.15
+            if not duplikely:
+                new_fields.append(field)
+        self.fields = new_fields
+        return
+
+
+        tuplist = np.array(tuplist)
+        print(np.percentile(tuplist[tuplist[:,0] == 0], [50], axis=0))
+        print()
+        print(np.percentile(tuplist[tuplist[:,0] == 1], [50], axis=0))
+        exit()
+        print(tuplist[tuplist[:,1] == 1][:].mean(axis=0))
+        exit()
+        dup=0
+        print("{:.0f} {:.3f} {:.3f} {:.3f} {:.3f} {:.3f} ".format(dup, np.array(x_dif).mean(),
+                                                                  np.array(y_dif).mean(),
+                                                                  np.array(angle_dif).mean(),
+                                                                  np.array(radang_dif).mean(),
+                                                                  np.array(sfrsum).mean()))
+        dup=1
+        x_dif, y_dif, angle_dif, radang_dif, sfrsum = zip(*duplist)
+        print("{:.0f} {:.3f} {:.3f} {:.3f} {:.3f} {:.3f} ".format(dup, np.array(x_dif).mean(),
+                                                                  np.array(y_dif).mean(),
+                                                                  np.array(angle_dif).mean(),
+                                                                  np.array(radang_dif).mean(),
+                                                                  np.array(sfrsum).mean()))
+
+

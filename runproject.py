@@ -11,14 +11,14 @@ numberrange = range(43, 52)
 sfrfilename = 'edge_sfr_values.txt'
 PATHS = [
     # "/mnt/mtfm/56mm/f2.8/mtfm/",
-    # "/mnt/mtfm/56mm/f8/mtfm/"
+    "/mnt/mtfm/56mm/f8/mtfm/"
     # "/mnt/mtfm/56mm/f5.6/mtfm/"
     # "/mnt/mtfm/56mm/f1.2/mtfm/"
 
     # '/mnt/mtfm/16-55mm/16mm f5.6/'
     # '/mnt/mtfm/16-55mm/27mm f2.8/'
     # '/mnt/mtfm/16-55mm/27mm f8/'
-    '/mnt/mtfm/23mm f1.4/mtmf/'
+    # '/mnt/mtfm/23mm f1.4/mtmf/'
 ]
 ax = None
 for path in PATHS:
@@ -34,14 +34,28 @@ for path in PATHS:
     filenames.sort()
     _, filenames = zip(*filenames)
     focusset = FocusSet(filenames[:])
-
-    # ax = focusset.fields[8].plot(0.3, MERIDIONAL, show=False, ax=ax, alpha=0.4)
-    ax = focusset.fields[8].plot(0.3, SAGITTAL, show=False, ax=ax, alpha=0.4)
-    plt.show()
-    exit()
-
-    # focusset.plot_field_curvature_strip(0.2)
-
+    dups = [4,7,9, 12, 16,23, 27.1, 32, 36 ]
+    focusset.remove_duplicated_fields()
+    # exit()
+    # focusset.find_best_focus(500, 2000, 0.26, MERIDIONAL, plot=True)
+    # plt.show()
+    # focusset.find_best_focus(500, 2000, 0.26, SAGITTAL, plot=True)
+    # plt.show()
+    # focusset.find_best_focus(500, 2000, 0.26, BOTH_AXES, plot=True)
+    # plt.show()
+    # exit()
+    # ax = focusset.fields[8].plot(0.15, MERIDIONAL, show=False, ax=ax, alpha=0.4)
+    # ax = focusset.fields[8].plot(0.15, SAGITTAL, show=False, ax=ax, alpha=0.4)
+    # plt.show()
+    # exit()
+    #
+    # y = []
+    # x = np.linspace(0, 1 - 1/64, 64)
+    #
+    # plt.plot(x, GOOD)
+    # plt.plot(x, diffraction_mtf(x*1.3))
+    # plt.show()
+    # exit()
     # for field in focusset.fields:
     #     field.plot_points(0.5, axis=SAGGITAL)
         # field.plot(0.3, axis=SAGGITAL, show=True)
@@ -59,10 +73,13 @@ for path in PATHS:
     # focusset.find_best_focus(541.0863437083334, 71.681156, 0.3, SAGGITAL, plot=True); plt.show(); exit()
     # focusset.fields[8].plot_points();exit()
     # focusset.plot_field_curvature_strip(0.3);exit()
-    ax, skew = focusset.plot_ideal_focus_field(detail=0.5, show=False, freq=0.3, ax=ax, axis=MERIDIONAL,
-                                         plot_curvature=1, color=[0.8, 0, 0, 0.5])
-    ax, skew = focusset.plot_ideal_focus_field(detail=0.5, show=False, freq=0.3, ax=ax, axis=SAGITTAL,
-                                               plot_curvature=1, color=[0.0, 0.0, 1.0, 0.5], skewplane=False)
+    skew = True
+    ax, skew = focusset.plot_ideal_focus_field(detail=0.9, show=False, freq=0.3, ax=ax, axis=BOTH_AXES,
+                                               plot_curvature=1, color=[0.0, 0.0, 1.0, 0.5], skewplane=skew, alpha=0.6)
+    ax, skew = focusset.plot_ideal_focus_field(detail=0.9, show=False, freq=0.3, ax=ax, axis=MERIDIONAL,
+                                         plot_curvature=1, color=[0.8, 0, 0, 0.5], skewplane=skew, alpha=0.2)
+    ax, skew = focusset.plot_ideal_focus_field(detail=0.9, show=False, freq=0.3, ax=ax, axis=SAGITTAL,
+                                               plot_curvature=1, color=[0.0, 0.0, 1.0, 0.5], skewplane=skew, alpha=0.2)
 
     # focusset.find_best_focus(2000, 3000, 0.25, SAGGITAL, plot=True)
     # focusset.find_best_focus(4597.787801708333, 1536.6772678750003, 0.25, SAGGITAL, plot=True)
