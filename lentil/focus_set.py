@@ -78,10 +78,10 @@ class FocusSet:
 
             for x_idx, x in enumerate(x_values):
                 for y_idx, y in enumerate(y_values):
-                    offset = skewplane(x, y)
-                    z_values[y_idx, x_idx] -= offset
-                    z_values_low[y_idx, x_idx] -= offset
-                    z_values_high[y_idx, x_idx] -= offset
+                    sheet = skewplane(x, y)
+                    z_values[y_idx, x_idx] -= sheet
+                    z_values_low[y_idx, x_idx] -= sheet
+                    z_values_high[y_idx, x_idx] -= sheet
 
         if plot_type == 0:
             plt.figure()
@@ -108,20 +108,21 @@ class FocusSet:
             print(y.flatten().shape)
             print(z_values.shape)
 
-            if plot_curvature:
-                num_sheets = 1
-                offsets = []
-                for n in range(num_sheets):
-                    offsets.append(z_values * (n/num_sheets) + z_values_low * (1 - (n/num_sheets)))
+            NUM_SHEETS = 1
+            if plot_curvature and NUM_SHEETS > 0:
+                sheets = []
+                for n in range(NUM_SHEETS):
+                    sheets.append(z_values * (n/NUM_SHEETS) + z_values_low * (1 - (n/NUM_SHEETS)))
 
-                for n in range(num_sheets+1):
-                    offsets.append(z_values_high * (n/num_sheets) + z_values * (1 - (n/num_sheets)))
+                for n in range(NUM_SHEETS+1):
+                    ratio = n / max(1, NUM_SHEETS)  # Avoid divide by zero
+                    sheets.append(z_values_high * (ratio) + z_values * (1 - (ratio)))
 
-                sheet_nums = np.linspace(-1, 1, len(offsets))
+                sheet_nums = np.linspace(-1, 1, len(sheets))
             else:
-                offsets = [0.0]
+                sheets = [z_values]
                 sheet_nums = [0]
-            for sheet_num, offset in zip(sheet_nums, offsets):
+            for sheet_num, sheet in zip(sheet_nums, sheets):
 
                 cmap = plt.cm.winter  # Base colormap
                 my_cmap = cmap(np.arange(cmap.N))  # Read colormap colours
@@ -143,7 +144,7 @@ class FocusSet:
                 else:
                     norm = matplotlib.colors.Normalize(vmin=0, vmax=1)
 
-                surf = ax.plot_surface(x, y, z_values+offset, color=new_facecolor, norm=norm, edgecolors=new_color,
+                surf = ax.plot_surface(x, y, sheet, color=new_facecolor, norm=norm, edgecolors=new_color,
                                        rstride=1, cstride=1, linewidth=1, antialiased=True)
             if passed_ax is None:
                 pass# fig.colorbar(surf, shrink=0.5, aspect=5)

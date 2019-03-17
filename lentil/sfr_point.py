@@ -84,12 +84,12 @@ class SFRPoint:
 
     @property
     def is_saggital(self):
-        if self.radialangle < 45.0:
+        if self.radialangle > 45.0:
             return True
 
     @property
     def is_meridional(self):
-        if self.radialangle > 45.0:
+        if self.radialangle < 45.0:
             return True
 
     def is_axis(self, axis):
@@ -116,3 +116,5 @@ class SFRPoint:
                                                                                   self.y,
                                                                                   self.angle,
                                                                                   self.radialangle)
+
+    

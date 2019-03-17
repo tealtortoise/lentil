@@ -150,7 +150,8 @@ class SFRField():
         output = func(x, y)  # Get (buried) interpolated value at point of interest
         return np.clip(output[0][0], 1e-5, 1.0)  # Return scalar
 
-    def plot(self, freq=0.1, axis=BOTH_AXES, plot_type=1, detail=1.0, show=True, ax=None):
+    def plot(self, freq=0.1, axis=BOTH_AXES, plot_type=1, detail=1.0,
+             show=True, ax=None, alpha=0.85):
         """
         Plots SFR/MTF values for chosen axis across field
 
@@ -167,11 +168,13 @@ class SFRField():
             for y_idx, y in enumerate(y_values):
                 z_values[y_idx, x_idx] = self.interpolate_value(x, y, freq, axis)
 
+        max_z = np.amax(z_values) * 1.1
+
         if plot_type == 0:
             plt.figure()
             contours = np.arange(0.1, 0.6, 0.01)
             colors = []
-            linspaced = np.linspace(0.0, 1.0, len(contours))
+            linspaced = np.linspace(0.0, max_z, len(contours))
             for lin, line in zip(linspaced, contours):
                 colors.append(colorsys.hls_to_rgb(lin * 0.8, 0.4, 1.0))
             CS = plt.contour(x_values, y_values, z_values, contours, colors=colors)
@@ -181,7 +184,7 @@ class SFRField():
             fig = plt.figure()
             if ax is None:
                 ax = fig.add_subplot(111, projection='3d')
-                ax.set_zlim(0.0, 1.0)
+                ax.set_zlim(0.0, max_z)
             # ax.zaxis.set_major_locator(LinearLocator(10))
             # ax.zaxis.set_major_formatter(FormatStrFormatter('%.02f'))
 
@@ -192,7 +195,7 @@ class SFRField():
 
             cmap = plt.cm.winter  # Base colormap
             my_cmap = cmap(np.arange(cmap.N))  # Read colormap colours
-            my_cmap[:, -1] = 0.85  # Set colormap alpha
+            my_cmap[:, -1] = alpha  # Set colormap alpha
             # print(my_cmap[1,:].shape);exit()
             new_cmap = np.ndarray((256, 4))
 
@@ -204,9 +207,9 @@ class SFRField():
             # my_col[:, :, -1] = 0.85
 
             mycmap = ListedColormap(new_cmap)
-            norm = matplotlib.colors.Normalize(vmin=0, vmax=1)
-            surf = ax.plot_surface(x, y, z_values, cmap=mycmap, norm=norm,
-                                   rstride=1, cstride=1, linewidth=1, antialiased=True)
+            norm = matplotlib.colors.Normalize(vmin=0, vmax=max_z)
+            surf = ax.plot_surface(x, y, z_values, cmap=mycmap, norm=norm, edgecolors='b',
+                                   rstride=1, cstride=1, linewidth=0.5, antialiased=True)
             fig.colorbar(surf, shrink=0.5, aspect=5)
         if show:
             plt.show()

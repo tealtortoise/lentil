@@ -34,6 +34,12 @@ for path in PATHS:
     filenames.sort()
     _, filenames = zip(*filenames)
     focusset = FocusSet(filenames[:])
+
+    # ax = focusset.fields[8].plot(0.3, MERIDIONAL, show=False, ax=ax, alpha=0.4)
+    ax = focusset.fields[8].plot(0.3, SAGITTAL, show=False, ax=ax, alpha=0.4)
+    plt.show()
+    exit()
+
     # focusset.plot_field_curvature_strip(0.2)
 
     # for field in focusset.fields:
@@ -52,14 +58,12 @@ for path in PATHS:
     # exit()
     # focusset.find_best_focus(541.0863437083334, 71.681156, 0.3, SAGGITAL, plot=True); plt.show(); exit()
     # focusset.fields[8].plot_points();exit()
-    # focusset.plot_field_curvature_strip(0.1);exit()
-    ax, skew = focusset.plot_ideal_focus_field(detail=1, show=False, freq=0.2, ax=ax, axis=MERIDIONAL,
-                                         plot_curvature=0, color=[0.8, 0, 0, 0.5])
-    ax, skew = focusset.plot_ideal_focus_field(detail=1, show=False, freq=0.2, ax=ax, axis=SAGITTAL,
-                                               plot_curvature=0, color=[0.0, 0.0, 1.0, 0.5], skewplane=False)
+    # focusset.plot_field_curvature_strip(0.3);exit()
+    ax, skew = focusset.plot_ideal_focus_field(detail=0.5, show=False, freq=0.3, ax=ax, axis=MERIDIONAL,
+                                         plot_curvature=1, color=[0.8, 0, 0, 0.5])
+    ax, skew = focusset.plot_ideal_focus_field(detail=0.5, show=False, freq=0.3, ax=ax, axis=SAGITTAL,
+                                               plot_curvature=1, color=[0.0, 0.0, 1.0, 0.5], skewplane=False)
 
-    # ax = focusset.fields[9].plot(0.15, MERIDIONAL, show=False, ax=ax)
-    # ax = focusset.fields[9].plot(0.15, SAGGITAL, show=False, ax=ax)
     # focusset.find_best_focus(2000, 3000, 0.25, SAGGITAL, plot=True)
     # focusset.find_best_focus(4597.787801708333, 1536.6772678750003, 0.25, SAGGITAL, plot=True)
 plt.show()
