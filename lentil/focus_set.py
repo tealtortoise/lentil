@@ -1,6 +1,7 @@
 import colorsys
 import csv
 import math
+from logging import getLogger
 
 import matplotlib
 import numpy as np
@@ -12,6 +13,7 @@ from lentil.sfr_point import SFRPoint
 from lentil.sfr_field import SFRField
 from lentil.constants_utils import *
 
+log = getLogger(__name__)
 
 class FocusSet:
     """
@@ -40,61 +42,71 @@ class FocusSet:
         :param freq: Frequency of interest in cy/px (-1 for MTF50)
         :param detail: Alters number of points in plot (relative to 1.0)
         :param axis: SAGGITAL or MERIDIONAL or BOTH_AXES
-        :param plot_type: 0 is 2d, 1 is 3d
+        :param plot_type: 0 is 2d contour, 1 is 3d
         :param show: Displays plot if True
         :param ax: Pass existing matplotlib axis to use
         :return: matplotlib axis for reuse
         """
         x_values, y_values = self.fields[0].build_axis_points(24*detail, 16*detail)
-        z_values = np.ndarray((len(y_values), len(x_values)))
+        focus_posits = np.ndarray((len(y_values), len(x_values)))
+        sharps = focus_posits.copy()
         if plot_curvature:
-            sharps = z_values.copy()
-            colours = z_values.copy()
-            z_values_low = z_values.copy()
-            z_values_high = z_values.copy()
+            colours = focus_posits.copy()
+            z_values_low = focus_posits.copy()
+            z_values_high = focus_posits.copy()
 
-        # fn = self.get_simple_interpolation_fn(axis)
+        tot_locs = len(x_values) * len(y_values)
+        locs = 1
+
         for x_idx, x in enumerate(x_values):
             for y_idx, y in enumerate(y_values):
-                if plot_curvature:
+                print("Finding best focus for location {} / {}".format(locs, tot_locs))
+                locs += 1
+                peak, sharp, low, high = self.find_best_focus(x, y, freq, axis)
 
-                    peak, sharp, low, high = self.find_best_focus(x, y, freq, axis)
-                else:
-                    _, peak, _, _ = self.find_best_focus(x, y, freq, axis)
-                # _, peak_m, _, _ = self.find_best_focus(x, y, freq, MERIDIONAL)
-                # _, peak_s, _, _ = self.find_best_focus(x, y, freq, SAGGITAL)
-                # z_values[y_idx, x_idx] = (peak_m + peak_s) / 2.0
-                z_values[y_idx, x_idx] = peak
+                sharps[y_idx, x_idx] = sharp
                 if plot_curvature:
-                    sharps[y_idx, x_idx] = sharp
+                    focus_posits[y_idx, x_idx] = peak
                     z_values_low[y_idx, x_idx] = low
                     z_values_high[y_idx, x_idx] = high
 
         if plot_curvature and skewplane:
-            if skewplane is True:
+            if "__call__" not in dir(skewplane):
                 x_int, y_int = np.meshgrid(x_values, y_values)
                 print(x_values)
                 print(x_int)
                 print(y_int)
-                print(z_values.flatten())
-                skewplane = interpolate.SmoothBivariateSpline(x_int.flatten(), y_int.flatten(), z_values.flatten(), kx=1, ky=1, s=float("inf"))
+                print(focus_posits.flatten())
+                skewplane = interpolate.SmoothBivariateSpline(x_int.flatten(), y_int.flatten(), focus_posits.flatten(), kx=1, ky=1, s=float("inf"))
 
             for x_idx, x in enumerate(x_values):
                 for y_idx, y in enumerate(y_values):
                     sheet = skewplane(x, y)
-                    z_values[y_idx, x_idx] -= sheet
+                    focus_posits[y_idx, x_idx] -= sheet
                     z_values_low[y_idx, x_idx] -= sheet
                     z_values_high[y_idx, x_idx] -= sheet
 
+        low_perf = diffraction_mtf(min(1.0, freq * 5))
+        high_perf = diffraction_mtf(min(1.0, freq * 1.2))
+
         if plot_type == 0:
-            plt.figure()
-            contours = np.arange(0.1, 0.6, 0.01)
+            fig, ax = plt.subplots()
+            if plot_curvature:
+                contours = np.arange(int(np.amin(focus_posits)*2)/2.0 - 0.5, np.amax(focus_posits)+0.5, 0.5)
+                z_values = focus_posits
+            else:
+                contours = np.arange(int(low_perf*50)/50.0 -0.02, high_perf+0.02, 0.02)
+                z_values = sharps
             colors = []
             linspaced = np.linspace(0.0, 1.0, len(contours))
             for lin, line in zip(linspaced, contours):
-                colors.append(colorsys.hls_to_rgb(lin * 0.8, 0.4, 1.0))
-            CS = plt.contour(x_values, y_values, z_values, contours, colors=colors)
-            plt.clabel(CS, inline=1, fontsize=10)
+                colors.append(plt.cm.viridis(lin))
+                # colors.append(colorsys.hls_to_rgb(lin * 0.8, 0.4, 1.0))
+
+            ax.set_ylim(np.amax(y_values), np.amin(y_values))
+            CS = ax.contourf(x_values, y_values, z_values, contours, colors=colors)
+            CS2 = ax.contour(x_values, y_values, z_values, contours, colors=('black',))
+            plt.clabel(CS2, inline=1, fontsize=10)
             plt.title('Simplest default with labels')
         else:
             if ax is None:
@@ -112,21 +124,25 @@ class FocusSet:
             x, y = np.meshgrid(x_values, y_values)
             print(x.flatten().shape)
             print(y.flatten().shape)
-            print(z_values.shape)
+            print(focus_posits.shape)
 
             NUM_SHEETS = 0
-            if plot_curvature and NUM_SHEETS > 0:
-                sheets = []
-                for n in range(NUM_SHEETS):
-                    sheets.append(z_values * (n/NUM_SHEETS) + z_values_low * (1 - (n/NUM_SHEETS)))
+            if plot_curvature:
+                if NUM_SHEETS > 0:
+                    sheets = []
+                    for n in range(NUM_SHEETS):
+                        sheets.append(focus_posits * (n/NUM_SHEETS) + z_values_low * (1 - (n/NUM_SHEETS)))
 
-                for n in range(NUM_SHEETS+1):
-                    ratio = n / max(1, NUM_SHEETS)  # Avoid divide by zero
-                    sheets.append(z_values_high * (ratio) + z_values * (1 - (ratio)))
+                    for n in range(NUM_SHEETS+1):
+                        ratio = n / max(1, NUM_SHEETS)  # Avoid divide by zero
+                        sheets.append(z_values_high * (ratio) + focus_posits * (1 - (ratio)))
 
-                sheet_nums = np.linspace(-1, 1, len(sheets))
+                    sheet_nums = np.linspace(-1, 1, len(sheets))
+                else:
+                    sheets = [focus_posits]
+                    sheet_nums = [0]
             else:
-                sheets = [z_values]
+                sheets = [sharps]
                 sheet_nums = [0]
             for sheet_num, sheet in zip(sheet_nums, sheets):
 
@@ -139,15 +155,13 @@ class FocusSet:
                 new_color = [color[0], color[1], color[2], 0.5 - (sheet_num ** 2) ** 0.5 * 0.4]
                 new_facecolor = [color[0], color[1], color[2], 0.3 - (sheet_num ** 2) ** 0.5 * 0.24]
 
-                low_perf = diffraction_mtf(min(1.0, freq * 5))
-                high_perf = diffraction_mtf(min(1.0, freq * 1.2))
                 # print(low_perf, high_perf)
                 new_facecolor = plt.cm.jet(np.clip(1.0 - ((sharps - low_perf) / (high_perf - low_perf)), 0.0, 1.0))  # linear gradient along the t-axis
                 new_edgecolor = 'b'
                 new_facecolor[:,:,3] = alpha
-                # new_color = new_facecolor = np.repeat(col1[np.newaxis, :, :], z_values.shape[0], axis=0)  # expand over the theta-    axis
+                # new_color = new_facecolor = np.repeat(col1[np.newaxis, :, :], focus_posits.shape[0], axis=0)  # expand over the theta-    axis
                 # print(col1);print(col1.shape);exit()
-                # print(z_values.shape)
+                # print(focus_posits.shape)
                 # print(new_facecolor)
                 # print(new_facecolor.shape);exit()
 
@@ -192,7 +206,7 @@ class FocusSet:
                             self.fields[int(mid + 1)].interpolate_value(x, y, freq, MERIDIONAL) * prop
             midpeak = ((sag_midpeak + mer_midpeak)*0.5)
 
-            print( mid, midpeak)
+            log.info( mid, midpeak)
             return mid, midpeak, midpeak, midpeak
 
         # Get SFR from each field
@@ -215,7 +229,7 @@ class FocusSet:
             return peak_x, peak_y, poly
 
         weighting_power = max(0, 4 - np.exp(-len(x_values) / 20 + 1.4))
-        # print("Weighting power {}".format(weighting_power))
+        # log.info("Weighting power {}".format(weighting_power))
         # Plot weighting curve
         # x = np.arange(1, 50)
         # y = 4 - np.exp(-x / 20 + 1.4)
@@ -224,7 +238,7 @@ class FocusSet:
 
         high_values = (y_values > (np.amax(y_values) * 0.82))
         n_high_values = high_values.sum()
-        print("Dataset has {} high y_values".format(n_high_values))
+        log.info("Dataset has {} high y_values".format(n_high_values))
         # exit()
 
         plot_x = np.linspace(0, max(x_values), 100)
@@ -233,7 +247,7 @@ class FocusSet:
         # 1st stage
         weights = (y_values / np.max(y_values)) ** (weighting_power + 2)  # Favour values closer to maximum
         p_peak_x, p_peak_y, poly_draft = fit_poly(x_values, y_values, weights)
-        print("1st stage peak is {:.3f} at {:.2f}".format(p_peak_y, p_peak_x))
+        log.info("1st stage peak is {:.3f} at {:.2f}".format(p_peak_y, p_peak_x))
         if plot:
             fitted_curve_plot_y_1 = np.clip(np.polyval(poly_draft, plot_x), 0.0, float("inf"))
             plt.plot(plot_x, fitted_curve_plot_y_1, color='red')
@@ -252,10 +266,11 @@ class FocusSet:
 
         if len(trimmed_y_values) < 3 or not 0 < closest_field_to_peak < (len(y_values) - 1):
             if not strict:
-                # print(x, y)
+                # log.info(x, y)
                 # plt.plot(x_values, y_values)
                 # plt.plot(trimmed_x_values, trimmed_y_values, color='yellow')
                 # plt.show()
+                log.warning("Focus peak may not be in range, output clipped")
                 return closest_field_to_peak, y_values[closest_field_to_peak],\
                        y_values[closest_field_to_peak], y_values[closest_field_to_peak]
             raise Exception("Not enough data points around peak to analyse")
@@ -272,12 +287,12 @@ class FocusSet:
         poly_acceptable[2] -= p_peak_y * derate
         acceptable_focus_roots = np.roots(poly_acceptable)
 
-        print("2nd stage peak is {:.3f} at {:.2f}".format(p_peak_y, p_peak_x))
+        log.info("2nd stage peak is {:.3f} at {:.2f}".format(p_peak_y, p_peak_x))
 
         if strict and not 0.0 < p_peak_x < x_values[-1]:
             raise Exception("Focus peak appears to be out of range, strict=True")
         if not -0.5 < p_peak_x < (x_values[-1] + 0.5):
-            print(x, y)
+            log.info(x, y)
             plt.plot(x_values, y_values)
             plt.plot(trimmed_x_values, trimmed_y_values, color='yellow')
             plt.show()
@@ -308,11 +323,11 @@ class FocusSet:
         sigmas = (np.max(y_values) / y_values) ** weighting_power
 
         # plt.plot(x_values, sigmas)
-        print(x, y)
+        log.info(x, y)
         fitted_params, _ = optimize.curve_fit(twogauss, x_values, y_values, bounds=bounds, sigma=sigmas,
                                               p0=(p_peak_y, p_peak_x, 1.0, 0.1))
-        print("3rd stage peak is {:.3f} at {:.2f}".format(fitted_params[0], fitted_params[1]))
-        print("Gaussian sigma: {:.3f}, peaky {:.3f}".format(*fitted_params[2:]))
+        log.info("3rd stage peak is {:.3f} at {:.2f}".format(fitted_params[0], fitted_params[1]))
+        log.info("Gaussian sigma: {:.3f}, peaky {:.3f}".format(*fitted_params[2:]))
 
         if plot:
             fitted_curve_plot_y_3 = twogauss(plot_x, *fitted_params)
@@ -324,7 +339,7 @@ class FocusSet:
             # 3rd Stage, fit gaussians
             # Use sum of two co-incident gaussians as fitting curve
 
-            print("Only {} high values, using guassian fit".format(n_high_values))
+            log.info("Only {} high values, using guassian fit".format(n_high_values))
             final_peak_x = (p_peak_x + g_peak_x) / 2.0
             final_peak_y = (p_peak_y + g_peak_y) / 2.0
         else:
@@ -379,16 +394,19 @@ class FocusSet:
             duplikely = np.percentile(tuplist[:,6], 80) < 0.15
             if not duplikely:
                 new_fields.append(field)
+            else:
+                log.info("Field {} removed as duplicate".format(n+1))
+        log.info("Removed {} out of {} field as duplicates".format(len(self.fields) - len(new_fields), len(self.fields)))
         self.fields = new_fields
         return
 
 
         tuplist = np.array(tuplist)
-        print(np.percentile(tuplist[tuplist[:,0] == 0], [50], axis=0))
-        print()
-        print(np.percentile(tuplist[tuplist[:,0] == 1], [50], axis=0))
+        log.info(np.percentile(tuplist[tuplist[:,0] == 0], [50], axis=0))
+        log.info()
+        log.info(np.percentile(tuplist[tuplist[:,0] == 1], [50], axis=0))
         exit()
-        print(tuplist[tuplist[:,1] == 1][:].mean(axis=0))
+        log.info(tuplist[tuplist[:,1] == 1][:].mean(axis=0))
         exit()
         dup=0
         print("{:.0f} {:.3f} {:.3f} {:.3f} {:.3f} {:.3f} ".format(dup, np.array(x_dif).mean(),

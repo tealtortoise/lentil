@@ -10,13 +10,14 @@ PATH = '/mnt/mtfm/16-55mm/27mm f5.6/mtfmappertemp_{:.0f}/'
 numberrange = range(43, 52)
 sfrfilename = 'edge_sfr_values.txt'
 PATHS = [
-    # "/mnt/mtfm/56mm/f2.8/mtfm/",
-    "/mnt/mtfm/56mm/f8/mtfm/"
+    "/mnt/mtfm/56mm/f2.8/mtfm/",
+    # "/mnt/mtfm/56mm/f8/mtfm/"
     # "/mnt/mtfm/56mm/f5.6/mtfm/"
     # "/mnt/mtfm/56mm/f1.2/mtfm/"
 
     # '/mnt/mtfm/16-55mm/16mm f5.6/'
     # '/mnt/mtfm/16-55mm/27mm f2.8/'
+    # '/mnt/mtfm/16-55mm/27mm f4/mtfm/'
     # '/mnt/mtfm/16-55mm/27mm f8/'
     # '/mnt/mtfm/23mm f1.4/mtmf/'
 ]
@@ -25,6 +26,7 @@ for path in PATHS:
     imagedirs = os.listdir(path)
     filenames = []
     for dir_ in imagedirs:
+        print(dir_)
         if dir_[:9] == 'mtfmapper':
             dirnumber = int("".join([s for s in dir_ if s.isdigit()]))
             print(dirnumber)
@@ -73,13 +75,22 @@ for path in PATHS:
     # focusset.find_best_focus(541.0863437083334, 71.681156, 0.3, SAGGITAL, plot=True); plt.show(); exit()
     # focusset.fields[8].plot_points();exit()
     # focusset.plot_field_curvature_strip(0.3);exit()
-    skew = True
-    ax, skew = focusset.plot_ideal_focus_field(detail=0.9, show=False, freq=0.3, ax=ax, axis=BOTH_AXES,
-                                               plot_curvature=1, color=[0.0, 0.0, 1.0, 0.5], skewplane=skew, alpha=0.6)
-    ax, skew = focusset.plot_ideal_focus_field(detail=0.9, show=False, freq=0.3, ax=ax, axis=MERIDIONAL,
-                                         plot_curvature=1, color=[0.8, 0, 0, 0.5], skewplane=skew, alpha=0.2)
-    ax, skew = focusset.plot_ideal_focus_field(detail=0.9, show=False, freq=0.3, ax=ax, axis=SAGITTAL,
-                                               plot_curvature=1, color=[0.0, 0.0, 1.0, 0.5], skewplane=skew, alpha=0.2)
+    skewplane = 0
+    # ax, skewplane = focusset.plot_ideal_focus_field(detail=0.4, show=False, freq=0.14,
+    #                                                 ax=ax, axis=BOTH_AXES,
+    #                                                 plot_type=0, plot_curvature=0,
+    #                                                 color=[0.0, 0.0, 1.0, 0.5],
+    #                                                 skewplane=skewplane, alpha=0.6)
+    ax, skewplane = focusset.plot_ideal_focus_field(detail=1.3, show=False, freq=0.14,
+                                                    ax=ax, axis=MERIDIONAL,
+                                                    plot_type=1, plot_curvature=1,
+                                                    color=[0.0, 0.0, 1.0, 0.5],
+                                                    skewplane=skewplane, alpha=0.6)
+    # ax, skewplane = focusset.plot_ideal_focus_field(detail=1.3, show=False, freq=0.14,
+    #                                                 ax=ax, axis=SAGITTAL,
+    #                                                 plot_type=0, plot_curvature=1,
+    #                                                 color=[0.0, 0.0, 1.0, 0.5],
+    #                                                 skewplane=skewplane, alpha=0.6)
 
     # focusset.find_best_focus(2000, 3000, 0.25, SAGGITAL, plot=True)
     # focusset.find_best_focus(4597.787801708333, 1536.6772678750003, 0.25, SAGGITAL, plot=True)

@@ -68,11 +68,11 @@ class SFRPoint:
         :return: MTF50 in cycles/px
         """
 
-        def callable(fr):
+        def callable_(fr):
             return self.interpolate_fn(fr) - 0.5
 
         if self._mtf50 is None:
-            self._mtf50 = optimize.newton(callable, 0.05)
+            self._mtf50 = optimize.newton(callable_, 0.05)
         return self._mtf50
 
     @property
@@ -124,12 +124,6 @@ class SFRPoint:
             sfrsum += abs(a - b)
         return x_dif, y_dif, angle_dif, radang_dif, sfrsum
 
-        if abs(pointb.x - self.x) > X_TOL:
-            return False
-        if abs(pointb.y - self.y) > Y_TOL:
-            return False
-        if abs(pointb.y - self.y) > Y_TOL:
-            return False
 
     def __str__(self):
         return "x: {:.0f}, y: {:.0f}, angle: {:.0f}, radial angle: {:.0f}".format(self.x,

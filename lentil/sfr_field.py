@@ -9,6 +9,7 @@ from scipy import interpolate
 
 from lentil.constants_utils import *
 
+SMOOTHING = 0.15
 
 class SFRField():
     """
@@ -30,7 +31,7 @@ class SFRField():
         np_axis2 = np_axis.copy()
         self.np_dict = {SAGITTAL: np_axis, MERIDIONAL: np_axis2}
 
-        self.smoothing = 0.5
+        self.smoothing = SMOOTHING
 
     @property
     def saggital_points(self):
