@@ -4,10 +4,9 @@ from matplotlib import pyplot as plt
 
 from lentil import *
 
-sfrfilename = 'edge_sfr_values.txt'
 PATHS = [
-    "/mnt/mtfm/Bernard/",
-    # "/mnt/mtfm/56mm/f2.8/mtfm/",
+    # "/mnt/mtfm/Bernard/",
+    "/mnt/mtfm/56mm/f2.8/mtfm/",
     # "/mnt/mtfm/56mm/f8/mtfm/"
     # "/mnt/mtfm/56mm/f5.6/mtfm/"
     # "/mnt/mtfm/56mm/f1.2/mtfm/"
@@ -20,32 +19,8 @@ PATHS = [
 ]
 ax = None
 for path in PATHS:
-    filenames = []
 
-    with os.scandir(path) as it:
-        for entry in it:
-            print(entry.path)
-            try:
-                entrynumber = int("".join([s for s in entry.name if s.isdigit()]))
-            except ValueError:
-                continue
-
-            if entry.is_dir():
-                fullpathname = os.path.join(path, entry.path, sfrfilename)
-                print(fullpathname)
-                sfr_file_exists = os.path.isfile(fullpathname)
-                if not sfr_file_exists:
-                    continue
-            elif entry.is_file():
-                fullpathname = entry.path
-            else:
-                continue
-            filenames.append((entrynumber, fullpathname))
-
-    filenames.sort()
-    _, filenames = zip(*filenames)
-
-    focusset = FocusSet(filenames[:])
+    focusset = FocusSet(path)
     # focusset.fields[1].plot(0.3, detail=2.0, axis=SAGITTAL, show=True, plot_type=0)
     focusset.fields[1].plot_fit_errors_2d(freqs=[0.3], by_percent=False, axis=BOTH_AXES)
     # focusset.fields[1].summarise_fit_errors(freqs=[0.3], by_percent=False)

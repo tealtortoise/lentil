@@ -1,6 +1,7 @@
 import colorsys
 import csv
 import math
+import os
 from logging import getLogger
 
 import matplotlib
@@ -15,13 +16,42 @@ from lentil.constants_utils import *
 
 log = getLogger(__name__)
 
+SFRFILENAME = 'edge_sfr_values.txt'
+
+
 class FocusSet:
     """
     A range of fields with stepped focus, in order
     """
 
-    def __init__(self, filenames):
+    def __init__(self, path):
         self.fields = []
+
+        filenames = []
+
+        with os.scandir(path) as it:
+            for entry in it:
+                print(entry.path)
+                try:
+                    entrynumber = int("".join([s for s in entry.name if s.isdigit()]))
+                except ValueError:
+                    continue
+
+                if entry.is_dir():
+                    fullpathname = os.path.join(path, entry.path, SFRFILENAME)
+                    print(fullpathname)
+                    sfr_file_exists = os.path.isfile(fullpathname)
+                    if not sfr_file_exists:
+                        continue
+                elif entry.is_file():
+                    fullpathname = entry.path
+                else:
+                    continue
+                filenames.append((entrynumber, fullpathname))
+
+        filenames.sort()
+        _, filenames = zip(*filenames)
+
         for filename in filenames:
             print("Opening file {}".format(filename))
             with open(filename, 'r') as sfrfile:
