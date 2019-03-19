@@ -174,15 +174,29 @@ class SFRField():
         max_z = np.amax(z_values) * 1.1
 
         if plot_type == 0:
-            plt.figure()
-            contours = np.arange(0.1, 0.6, 0.01)
+            fig, ax = plt.subplots()
             colors = []
-            linspaced = np.linspace(0.0, max_z, len(contours))
+            contours = np.arange(0, 1, 0.02)
+            linspaced = np.linspace(0.0, 1.0, len(contours))
             for lin, line in zip(linspaced, contours):
-                colors.append(colorsys.hls_to_rgb(lin * 0.8, 0.4, 1.0))
-            CS = plt.contour(x_values, y_values, z_values, contours, colors=colors)
-            plt.clabel(CS, inline=1, fontsize=10)
+                colors.append(plt.cm.viridis(lin))
+                # colors.append(colorsys.hls_to_rgb(lin * 0.8, 0.4, 1.0))
+
+            ax.set_ylim(np.amax(y_values), np.amin(y_values))
+            CS = ax.contourf(x_values, y_values, z_values, contours, colors=colors)
+            CS2 = ax.contour(x_values, y_values, z_values, contours, colors=('black',))
+            plt.clabel(CS2, inline=1, fontsize=10)
             plt.title('Simplest default with labels')
+
+            # plt.figure()
+            # contours = np.arange(0.1, 0.6, 0.01)
+            # colors = []
+            # linspaced = np.linspace(0.0, max_z, len(contours))
+            # for lin, line in zip(linspaced, contours):
+            #     colors.append(colorsys.hls_to_rgb(lin * 0.8, 0.4, 1.0))
+            # CS = plt.contour(x_values, y_values, z_values, contours, colors=colors)
+            # plt.clabel(CS, inline=1, fontsize=10)
+            # plt.title('Simplest default with labels')
         else:
             fig = plt.figure()
             if ax is None:

@@ -86,7 +86,7 @@ class FocusSet:
                     z_values_low[y_idx, x_idx] -= sheet
                     z_values_high[y_idx, x_idx] -= sheet
 
-        low_perf = diffraction_mtf(min(1.0, freq * 5))
+        low_perf = diffraction_mtf(min(1.0, freq * 3))
         high_perf = diffraction_mtf(min(1.0, freq * 1.2))
 
         if plot_type == 0:
@@ -171,7 +171,7 @@ class FocusSet:
 
                 mycmap = ListedColormap(new_cmap)
                 if plot_curvature:
-                    norm = None
+                    norm = matplotlib.colors.Normalize(vmin=low_perf, vmax=high_perf)
                 else:
                     norm = matplotlib.colors.Normalize(vmin=0, vmax=1)
 
@@ -182,6 +182,38 @@ class FocusSet:
         if show:
             plt.show()
         return ax, skewplane
+
+    def plot_field_curvature_strip_contour(self, freq=0.1, axis=MERIDIONAL):
+        heights = np.linspace(-1, 1, 41)
+        plot_focuses = np.linspace(0, len(self.fields), 40)
+        field_focus_locs = np.arange(0, len(self.fields))
+        sfrs = np.ndarray((len(plot_focuses), len(heights)))
+        for hn, height in enumerate(heights):
+            x = 3000 + height * 3000
+            y = 2000 + height * 2000
+            height_sfr = [field.interpolate_value(x, y, freq, axis=axis) for field in self.fields]
+            height_sfr_fn = interpolate.InterpolatedUnivariateSpline(field_focus_locs, height_sfr, k=1)
+            height_sfr_interpolated = height_sfr_fn(plot_focuses)
+            sfrs[:,hn] = height_sfr_interpolated
+
+        low_perf = 0.0
+        high_perf = diffraction_mtf(min(1.0, freq * 1.2))
+
+        fig, ax = plt.subplots()
+
+        contours = np.arange(int(low_perf * 20) / 20.0 - 0.05, high_perf + 0.05, 0.05)
+        colors = []
+        linspaced = np.linspace(0.0, 1.0, len(contours))
+        for lin, line in zip(linspaced, contours):
+            colors.append(plt.cm.jet(lin))
+            # colors.append(colorsys.hls_to_rgb(lin * 0.8, 0.4, 1.0))
+
+        ax.set_ylim(np.amin(plot_focuses), np.amax(plot_focuses))
+        CS = ax.contourf(heights, plot_focuses, sfrs, contours, colors=colors)
+        CS2 = ax.contour(heights, plot_focuses, sfrs, contours, colors=('black',), linewidths=0.8)
+        plt.clabel(CS2, inline=1, fontsize=10)
+        plt.title('Simplest default with labels')
+        plt.show()
 
     def find_best_focus(self, x, y, freq, axis=BOTH_AXES, plot=False, strict=False):
         """
@@ -217,7 +249,7 @@ class FocusSet:
         x_values = np.arange(0, len(y_values), 1)  # Arbitrary focus units
         y_values = np.array(y_values)
         if plot:
-            plt.plot(x_values, y_values, color='black')
+            plt.plot(x_values, y_values, '.', color='black')
             # plt.show()
         # Use quadratic spline as fitting curve
 
