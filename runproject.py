@@ -46,13 +46,17 @@ for path in PATHS:
     _, filenames = zip(*filenames)
 
     focusset = FocusSet(filenames[:])
+    # focusset.fields[1].plot(0.3, detail=2.0, axis=SAGITTAL, show=True, plot_type=0)
+    focusset.fields[1].plot_fit_errors_2d(freqs=[0.3], by_percent=False, axis=BOTH_AXES)
+    # focusset.fields[1].summarise_fit_errors(freqs=[0.3], by_percent=False)
+    exit()
     dups = [4,7,9, 12, 16,23, 27.1, 32, 36 ]
     # focusset.plot_field_curvature_strip_contour(0.18, SAGITTAL)
     # focusset.plot_field_curvature_strip_contour(0.18, MERIDIONAL)
     # exit()
     # focusset.remove_duplicated_fields()
     # exit()
-    focusset.fields[1].plot(0.1, MERIDIONAL, plot_type=0, detail=2)
+    # focusset.fields[7].plot(0.1, SAGITTAL, plot_type=0, detail=2)
     # focusset.find_best_focus(1000, 2000, 0.16, MERIDIONAL, plot=False)
     # plt.plot(focusset.fields[0].np_dict[MERIDIONAL]['np_x'], focusset.fields[0].np_dict[MERIDIONAL]['np_y'], '.')
     # plt.show()

@@ -9,7 +9,7 @@ from scipy import interpolate
 
 from lentil.constants_utils import *
 
-SMOOTHING = 0.15
+SMOOTHING = 0.10
 
 class SFRField():
     """
@@ -176,10 +176,10 @@ class SFRField():
         if plot_type == 0:
             fig, ax = plt.subplots()
             colors = []
-            contours = np.arange(0, 1, 0.02)
+            contours = np.arange(0.02, 0.30, 0.01)
             linspaced = np.linspace(0.0, 1.0, len(contours))
             for lin, line in zip(linspaced, contours):
-                colors.append(plt.cm.viridis(lin))
+                colors.append(plt.cm.jet(lin))
                 # colors.append(colorsys.hls_to_rgb(lin * 0.8, 0.4, 1.0))
 
             ax.set_ylim(np.amax(y_values), np.amin(y_values))
@@ -252,3 +252,84 @@ class SFRField():
             colours = np.array([z_arr, z_arr, z_arr, z_arr]).T
             ax.scatter(x_arr, y_arr, z_arr, c='r' if axis is SAGITTAL else 'b', marker='.')
         plt.show()
+
+    def get_fit_errors(self, freqs=[0.1], by_percent=False, axis=BOTH_AXES):
+        try:
+            numfreqs = len(freqs)
+        except TypeError:
+            freqs = [freqs]
+            numfreqs= 1
+        points = self.get_subset(axis)
+        err = np.ndarray((numfreqs, len(points)))
+        fit = np.ndarray((numfreqs, len(points)))
+        orig = np.ndarray((numfreqs, len(points)))
+        for n_f, freq in enumerate(freqs):
+            for n_point, point in enumerate(points):
+                fit_val = self.interpolate_value(point.x, point.y, freq, point.axis)
+                fit[n_f, n_point] = fit_val
+
+                orig_val = point.get_freq(freq)
+                orig[n_f, n_point] = orig_val
+
+                if by_percent:
+                    err[n_f, n_point] = (fit_val - orig_val) / orig_val * 100.0
+                else:
+                    err[n_f, n_point] = fit_val - orig_val
+        return err, fit, orig
+
+    def plot_fit_errors_2d(self, freqs=[0.1], by_percent=False, axis=BOTH_AXES):
+        if axis == BOTH_AXES:
+            axis = [SAGITTAL, MERIDIONAL]
+        for axis in axis:
+            errors, fit, orig = self.get_fit_errors(freqs, axis=axis, by_percent=by_percent)
+            abs_mean = np.mean(np.abs(errors), axis=0)  # Mean of all freqs
+            x = self.np_dict[axis]['np_x']
+            y = self.np_dict[axis]['np_y']
+            norm = (abs_mean - abs_mean.min()) / (abs_mean.max() - abs_mean.min())
+
+            dimension = "%" if by_percent else ""
+            if axis == SAGITTAL:
+                print("=== SAGITTAL === ")
+            else:
+                print("=== MERIDIONAL === ")
+            self._print_error_stats(abs_mean, orig, dimension)
+
+            plt.scatter(x, y, c=abs_mean, cmap=plt.cm.jet)
+            plt.colorbar()
+            plt.title('Absolute fit errors ({}cy/px, {})'.format(str(freqs), axis))
+            plt.xlabel('Image location x')
+            plt.ylabel('Image location y')
+            plt.show()
+
+    def plot_fit_errors_histogram(self, freqs=[0.1]):
+        err, fit, orig = self.get_fit_errors(freqs)
+        plt.hist(err.flatten())
+        plt.show()
+
+    def summarise_fit_errors(self, freqs=[0.1], by_freq=False, by_percent=False):
+        if not by_freq:
+            freqs = [freqs]
+
+        for freq in freqs:
+            print("Getting errors for frequency(s)    {}:".format(str(freq)))
+            errors, fit, orig = self.get_fit_errors(freq, by_percent=by_percent)
+            dimension = "%" if by_percent else ""
+            self._print_error_stats(errors, orig, dimension)
+
+    def _print_error_stats(self, err, orig, dimension):
+            flat = np.abs(err).flatten()
+            print("  n                                {:.0f}".format(len(flat)))
+            print("  Original data max                {:.4f}".format(orig.max()))
+            origrms =(orig**2).mean()**0.5
+            print("  Original data RMS                {:.4f}".format(origrms))
+            print("  ---")
+            print("  Mean absolute error              {:.4f}{}".format(np.mean(np.abs(flat)), dimension))
+            error_rms = np.mean(flat**2)**0.5
+            print("  Root mean squared (RMS) error    {:.4f}{}".format(error_rms, dimension))
+            print("  95th percentile absolute error   {:.4f}{}".format(np.percentile(np.abs(flat), 95), dimension))
+            print("  99th percentile absolute error   {:.4f}{}".format(np.percentile(np.abs(flat), 99), dimension))
+            print("  99.9th percentile absolute error {:.4f}{}".format(np.percentile(np.abs(flat), 99.9), dimension))
+            print("  Maximum absolute error           {:.4f}{}".format(np.amax(np.abs(flat)), dimension))
+            print("")
+            print("  RMS Error / RMS Original in %    {:.1f} ".format(error_rms / origrms *100))
+            print()

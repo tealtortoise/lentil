@@ -1,9 +1,9 @@
 import numpy as np
 
 DEFAULT_PIXEL_SIZE = 4e-6
-SAGITTAL = 1
-MERIDIONAL = 2
-BOTH_AXES = 3
+SAGITTAL = "SAGITTAL"
+MERIDIONAL = "MERIDIONAL"
+BOTH_AXES = "BOTH AXES"
 SFR_HEADER = [
     'blockid',
     'edgex',

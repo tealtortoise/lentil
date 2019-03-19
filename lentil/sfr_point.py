@@ -4,7 +4,7 @@ from scipy import interpolate, optimize
 
 
 import lentil.constants_utils
-
+from lentil.constants_utils import MERIDIONAL, SAGITTAL
 
 class SFRPoint:
     """
@@ -84,12 +84,12 @@ class SFRPoint:
 
     @property
     def is_saggital(self):
-        if self.radialangle > 45.0:
+        if self.axis == SAGITTAL:
             return True
 
     @property
     def is_meridional(self):
-        if self.radialangle < 45.0:
+        if self.axis == MERIDIONAL:
             return True
 
     def is_axis(self, axis):
@@ -100,6 +100,12 @@ class SFRPoint:
         if axis == lentil.constants_utils.BOTH_AXES:
             return True
         raise AttributeError("Unknown axis attribute")
+
+    @property
+    def axis(self):
+        if self.radialangle < 45.0:
+            return lentil.constants_utils.MERIDIONAL
+        return lentil.constants_utils.SAGITTAL
 
     def plot(self):
         """
