@@ -4,7 +4,7 @@ from scipy import interpolate, optimize
 
 
 import lentil.constants_utils
-from lentil.constants_utils import MERIDIONAL, SAGITTAL
+from lentil.constants_utils import *
 
 class SFRPoint:
     """
@@ -23,6 +23,7 @@ class SFRPoint:
         self.angle = float(rowdata[3])
         self.radialangle = float(rowdata[4])
         self.raw_sfr_data = [float(cell) for cell in rowdata[5:-1]]
+        self.auc = np.array(self.raw_sfr_data[:32]).mean()
         self.pixelsize = pixelsize or lentil.constants_utils.DEFAULT_PIXEL_SIZE
         self._interpolate_fn = None
         self._mtf50 = None
@@ -30,11 +31,12 @@ class SFRPoint:
 
     def get_freq(self, cy_px=None, lp_mm=None):
         """
-        Returns SFR at specified frequency, or MTF50 if '-1' input
+        Returns SFR at specified frequency, or MTF50 or AUC constants
+        (area under curve)
 
         Using linear interpolation
 
-        :param cy_px: frequency of interest in cycles/px (0.0-1.0)
+        :param cy_px: frequency of interest in cycles/px (0.0-1.0) (or constant)
         :param lp_mm: frequency of interest in line pairs / mm (>0.0)
         :return:
         """
@@ -42,13 +44,15 @@ class SFRPoint:
             cy_px = lp_mm * self.pixelsize * 1e3
         if cy_px is None:
             raise AttributeError("Must provide frequency in cycles/px or lp/mm")
-        if cy_px == -1:
+        if cy_px == MTF50:
             if lp_mm is not None:
                 return self.mtf50_lpmm
             else:
                 return self.mtf50
+        if cy_px == AUC:
+            return self.auc
         if not 0.0 <= cy_px < 1.0:
-            raise AttributeError("Frequency response must be between 0 and twice nyquist")
+            raise AttributeError("Frequency must be between 0 and twice nyquist, or a specified constant")
 
         return self.interpolate_fn(cy_px)
 
@@ -59,6 +63,7 @@ class SFRPoint:
             self._interpolate_fn = interpolate.InterpolatedUnivariateSpline(lentil.constants_utils.RAW_SFR_FREQUENCIES,
                                                                             self.raw_sfr_data, k=1)
         return self._interpolate_fn
+
 
     @property
     def mtf50(self):
@@ -97,7 +102,7 @@ class SFRPoint:
             return self.is_saggital
         if axis == lentil.constants_utils.MERIDIONAL:
             return self.is_meridional
-        if axis == lentil.constants_utils.BOTH_AXES:
+        if axis == lentil.constants_utils.MEDIAL:
             return True
         raise AttributeError("Unknown axis attribute")
 

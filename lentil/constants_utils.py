@@ -3,7 +3,7 @@ import numpy as np
 DEFAULT_PIXEL_SIZE = 4e-6
 SAGITTAL = "SAGITTAL"
 MERIDIONAL = "MERIDIONAL"
-BOTH_AXES = "BOTH AXES"
+MEDIAL = "BOTH AXES"
 SFR_HEADER = [
     'blockid',
     'edgex',
@@ -12,9 +12,14 @@ SFR_HEADER = [
     'radialangle'
 ]
 
+MTF50 = -1
+AUC = -2
 
-def diffraction_mtf(freq):
-    return 2.0 / np.pi * (np.arccos(freq) - freq * (1 - freq ** 2) ** 0.5)
+def diffraction_mtf(freq, fstop=8):
+    if type(freq) is int and freq == AUC:
+        return diffraction_mtf(np.linspace(0, 0.5-1.0/32, 32), fstop).mean()
+    mulfreq = np.clip(freq / 8.0 * fstop, 0, 1)
+    return 2.0 / np.pi * (np.arccos(mulfreq) - mulfreq * (1 - mulfreq ** 2) ** 0.5)
 
 
 RAW_SFR_FREQUENCIES = [x / 64 for x in range(64)]  # List of sfr frequencies in cycles/pixel

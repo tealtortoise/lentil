@@ -2,6 +2,7 @@ import colorsys
 import csv
 import math
 import os
+import logging
 from logging import getLogger
 
 import matplotlib
@@ -15,6 +16,10 @@ from lentil.sfr_field import SFRField
 from lentil.constants_utils import *
 
 log = getLogger(__name__)
+log.setLevel(logging.INFO)
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+log.addHandler(ch)
 
 SFRFILENAME = 'edge_sfr_values.txt'
 
@@ -24,54 +29,99 @@ class FocusSet:
     A range of fields with stepped focus, in order
     """
 
-    def __init__(self, path):
+    def __init__(self, rootpath, rescan=False, include_all=False):
         self.fields = []
 
         filenames = []
 
-        with os.scandir(path) as it:
-            for entry in it:
-                print(entry.path)
-                try:
-                    entrynumber = int("".join([s for s in entry.name if s.isdigit()]))
-                except ValueError:
-                    continue
-
-                if entry.is_dir():
-                    fullpathname = os.path.join(path, entry.path, SFRFILENAME)
-                    print(fullpathname)
-                    sfr_file_exists = os.path.isfile(fullpathname)
-                    if not sfr_file_exists:
-                        continue
-                elif entry.is_file():
-                    fullpathname = entry.path
-                else:
-                    continue
-                filenames.append((entrynumber, fullpathname))
-
-        filenames.sort()
-        _, filenames = zip(*filenames)
-
-        for filename in filenames:
-            print("Opening file {}".format(filename))
-            with open(filename, 'r') as sfrfile:
-                csvreader = csv.reader(sfrfile, delimiter=' ', quotechar='|')
-
-                points = []
+        try:
+            with open(os.path.join(rootpath, "slfjsadf" if rescan or include_all else "lentil_data.csv"), 'r')\
+                    as csvfile:
+                print("Found lentildata")
+                csvreader = csv.reader(csvfile, delimiter=',', quotechar='|')
                 for row in csvreader:
-                    points.append(SFRPoint(row))
+                    if row[0] == "Relevant filenames":
+                        stubnames = row[1:]
+                pathnames = [os.path.join(rootpath, stubname) for stubname in stubnames]
+                for pathname in pathnames:
+                    self.fields.append(SFRField(pathname=pathname))
+        except FileNotFoundError:
+            print("Did not find lentildata, finding files...")
+            with os.scandir(rootpath) as it:
+                for entry in it:
+                    print(entry.path)
+                    try:
+                        entrynumber = int("".join([s for s in entry.name if s.isdigit()]))
+                    except ValueError:
+                        continue
 
-            field = SFRField(points)
-            self.fields.append(field)
+                    if entry.is_dir():
+                        fullpathname = os.path.join(rootpath, entry.path, SFRFILENAME)
+                        print(fullpathname)
+                        sfr_file_exists = os.path.isfile(fullpathname)
+                        if not sfr_file_exists:
+                            continue
+                        stubname = os.path.join(entry.name, SFRFILENAME)
+                    elif entry.is_file():
+                        fullpathname = entry.path
+                    else:
+                        continue
+                    filenames.append((entrynumber, fullpathname, stubname))
 
-    def plot_ideal_focus_field(self, freq=0.1, detail=1.0, axis=BOTH_AXES, color=None,
+                    filenames.sort()
+
+            for entrynumber, pathname, filename in filenames:
+                print("Opening file {}".format(pathname))
+                field = SFRField(pathname=pathname)
+                field.filenumber = entrynumber
+                field.filename = filename
+                self.fields.append(field)
+            if not include_all:
+                self.find_relevant_fields(writepath=rootpath, freq=AUC)
+
+    def find_relevant_fields(self, freq=AUC, detail=1, writepath=None):
+        min_ = float("inf")
+        max_ = float("-inf")
+        x_values, y_values = self.fields[0].build_axis_points(24 * detail, 16 * detail)
+        totalpoints = len(x_values) * len(y_values) * 2
+        done = 0
+        for axis in MERIDIONAL, SAGITTAL:
+            for x in x_values:
+                for y in y_values:
+                    print("Finding relevant field for point {} of {}".format(done, totalpoints))
+                    done += 1
+                    fopt, _, _, _ = self.find_best_focus(x, y, freq=freq, axis=axis)
+                    if fopt > max_:
+                        max_ = fopt
+                    if fopt < min_:
+                        min_ = fopt
+        print("Searched from {} fields".format(len(self.fields)))
+        print("Found {} to {} contained all peaks".format(min_, max_))
+        minmargin = int(max(0, min_ - 2.0))
+        maxmargin = int(min(len(self.fields)-1, max_+ 2.0)+1.0)
+        print("Keeping {} to {}".format(minmargin, maxmargin))
+        filenumbers = []
+        filenames = []
+        for field in self.fields[minmargin:maxmargin+1]:
+            filenumbers.append(field.filenumber)
+            filenames.append(field.filename)
+        if writepath:
+            with open(os.path.join(writepath, "lentil_data.csv"), 'w') as datafile:
+                csvwriter = csv.writer(datafile, delimiter=',', quotechar='|',)
+                csvwriter.writerow(["Relevant filenames"]+filenames)
+                print("Data saved to lentil_data.csv")
+
+
+
+
+    def plot_ideal_focus_field(self, freq=0.1, detail=1.0, axis=MEDIAL, color=None,
                                plot_curvature=False, plot_type=1, show=True, ax=None, skewplane=False, alpha=0.7):
         """
         Plots peak sharpness at each point in field across all focus
 
         :param freq: Frequency of interest in cy/px (-1 for MTF50)
         :param detail: Alters number of points in plot (relative to 1.0)
-        :param axis: SAGGITAL or MERIDIONAL or BOTH_AXES
+        :param axis: SAGGITAL or MERIDIONAL or MEDIAL
         :param plot_type: 0 is 2d contour, 1 is 3d
         :param show: Displays plot if True
         :param ax: Pass existing matplotlib axis to use
@@ -116,8 +166,12 @@ class FocusSet:
                     z_values_low[y_idx, x_idx] -= sheet
                     z_values_high[y_idx, x_idx] -= sheet
 
-        low_perf = diffraction_mtf(min(1.0, freq * 3))
-        high_perf = diffraction_mtf(min(1.0, freq * 1.2))
+        low_perf = diffraction_mtf(freq, 24)
+        high_perf = diffraction_mtf(freq, 10)
+
+        # print(low_perf, high_perf)
+        # print(np.amax(sharps))
+        # exit()
 
         if plot_type == 0:
             fig, ax = plt.subplots()
@@ -227,11 +281,11 @@ class FocusSet:
             sfrs[:,hn] = height_sfr_interpolated
 
         low_perf = 0.0
-        high_perf = diffraction_mtf(min(1.0, freq * 1.2))
+        high_perf = diffraction_mtf(min(1.0, freq * 1), 11.0)
 
         fig, ax = plt.subplots()
 
-        contours = np.arange(int(low_perf * 20) / 20.0 - 0.05, high_perf + 0.05, 0.05)
+        contours = np.arange(int(low_perf * 20) / 50.0 - 0.02, high_perf + 0.02, 0.02)
         colors = []
         linspaced = np.linspace(0.0, 1.0, len(contours))
         for lin, line in zip(linspaced, contours):
@@ -245,19 +299,19 @@ class FocusSet:
         plt.title('Simplest default with labels')
         plt.show()
 
-    def find_best_focus(self, x, y, freq, axis=BOTH_AXES, plot=False, strict=False):
+    def find_best_focus(self, x, y, freq, axis=MEDIAL, plot=False, strict=False):
         """
         Get peak SFR at specified location and frequency vs focus, optionally plot.
         This does not call (.show()) on the plot.
 
         :param x: position in field
         :param freq: frequency of interest (-1 for MTF50)
-        :param axis: MERIDIONAL or SAGGITAL or BOTH_AXES
+        :param axis: MERIDIONAL or SAGGITAL or MEDIAL
         :param plot: Draws plot if True
         :return: Tuple (focus position of peak, height of peak)
         """
 
-        if axis == BOTH_AXES:
+        if axis == MEDIAL:
             sag_x, sag_y, _, _ = self.find_best_focus(x, y, freq, SAGITTAL)
             mer_x, mer_y, _, _ = self.find_best_focus(x, y, freq, MERIDIONAL)
             mid = (sag_x + mer_x) * 0.5
@@ -268,7 +322,7 @@ class FocusSet:
                             self.fields[int(mid + 1)].interpolate_value(x, y, freq, MERIDIONAL) * prop
             midpeak = ((sag_midpeak + mer_midpeak)*0.5)
 
-            log.info( mid, midpeak)
+            log.debug(str((mid, midpeak)))
             return mid, midpeak, midpeak, midpeak
 
         # Get SFR from each field
@@ -276,8 +330,12 @@ class FocusSet:
         for field in self.fields:
             y_values.append(field.interpolate_value(x, y, freq, axis))
 
+
         x_values = np.arange(0, len(y_values), 1)  # Arbitrary focus units
         y_values = np.array(y_values)
+        # print(x_values)
+        # print(y_values)
+        # exit()
         if plot:
             plt.plot(x_values, y_values, '.', color='black')
             # plt.show()
@@ -291,7 +349,7 @@ class FocusSet:
             return peak_x, peak_y, poly
 
         weighting_power = max(0, 4 - np.exp(-len(x_values) / 20 + 1.4))
-        # log.info("Weighting power {}".format(weighting_power))
+        # log.debug("Weighting power {}".format(weighting_power))
         # Plot weighting curve
         # x = np.arange(1, 50)
         # y = 4 - np.exp(-x / 20 + 1.4)
@@ -300,7 +358,7 @@ class FocusSet:
 
         high_values = (y_values > (np.amax(y_values) * 0.82))
         n_high_values = high_values.sum()
-        log.info("Dataset has {} high y_values".format(n_high_values))
+        log.debug("Dataset has {} high y_values".format(n_high_values))
         # exit()
 
         plot_x = np.linspace(0, max(x_values), 100)
@@ -309,7 +367,7 @@ class FocusSet:
         # 1st stage
         weights = (y_values / np.max(y_values)) ** (weighting_power + 2)  # Favour values closer to maximum
         p_peak_x, p_peak_y, poly_draft = fit_poly(x_values, y_values, weights)
-        log.info("1st stage peak is {:.3f} at {:.2f}".format(p_peak_y, p_peak_x))
+        log.debug("1st stage peak is {:.3f} at {:.2f}".format(p_peak_y, p_peak_x))
         if plot:
             fitted_curve_plot_y_1 = np.clip(np.polyval(poly_draft, plot_x), 0.0, float("inf"))
             plt.plot(plot_x, fitted_curve_plot_y_1, color='red')
@@ -349,20 +407,20 @@ class FocusSet:
         poly_acceptable[2] -= p_peak_y * derate
         acceptable_focus_roots = np.roots(poly_acceptable)
 
-        log.info("2nd stage peak is {:.3f} at {:.2f}".format(p_peak_y, p_peak_x))
+        log.debug("2nd stage peak is {:.3f} at {:.2f}".format(p_peak_y, p_peak_x))
 
         if strict and not 0.0 < p_peak_x < x_values[-1]:
             raise Exception("Focus peak appears to be out of range, strict=True")
         if not -0.5 < p_peak_x < (x_values[-1] + 0.5):
-            log.info(x, y)
+            log.debug(x, y)
             plt.plot(x_values, y_values)
             plt.plot(trimmed_x_values, trimmed_y_values, color='yellow')
             plt.show()
             raise Exception("Focus peak appears to be out of range, strict=False")
 
         if plot:
-            plt.plot(x_values, y_values)
-            plt.plot(trimmed_x_values, trimmed_y_values, color='yellow')
+            plt.plot(x_values, y_values, color="black")
+            plt.plot(trimmed_x_values, trimmed_y_values, color='magenta')
             fitted_curve_plot_y_2 = np.clip(np.polyval(poly, plot_x), 0.0, float("inf"))
             fitted_curve_plot_y_2_acceptable = np.clip(np.polyval(poly_acceptable, plot_x), 0.0, float("inf"))
             plt.plot(plot_x, fitted_curve_plot_y_2, color='orange')
@@ -385,11 +443,11 @@ class FocusSet:
         sigmas = (np.max(y_values) / y_values) ** weighting_power
 
         # plt.plot(x_values, sigmas)
-        log.info(x, y)
+        log.debug(str((x, y)))
         fitted_params, _ = optimize.curve_fit(twogauss, x_values, y_values, bounds=bounds, sigma=sigmas,
                                               p0=(p_peak_y, p_peak_x, 1.0, 0.1))
-        log.info("3rd stage peak is {:.3f} at {:.2f}".format(fitted_params[0], fitted_params[1]))
-        log.info("Gaussian sigma: {:.3f}, peaky {:.3f}".format(*fitted_params[2:]))
+        log.debug("3rd stage peak is {:.3f} at {:.2f}".format(fitted_params[0], fitted_params[1]))
+        log.debug("Gaussian sigma: {:.3f}, peaky {:.3f}".format(*fitted_params[2:]))
 
         if plot:
             fitted_curve_plot_y_3 = twogauss(plot_x, *fitted_params)
@@ -401,7 +459,7 @@ class FocusSet:
             # 3rd Stage, fit gaussians
             # Use sum of two co-incident gaussians as fitting curve
 
-            log.info("Only {} high values, using guassian fit".format(n_high_values))
+            log.debug("Only {} high values, using guassian fit".format(n_high_values))
             final_peak_x = (p_peak_x + g_peak_x) / 2.0
             final_peak_y = (p_peak_y + g_peak_y) / 2.0
         else:
@@ -444,7 +502,6 @@ class FocusSet:
         fields = self.fields[:]
         prev = fields[0].points
         new_fields = [fields[0]]
-        tuplist = []
         for n, field in enumerate(fields[1:]):
             tuplist=[]
             dup = (n+1) in train
@@ -484,4 +541,10 @@ class FocusSet:
                                                                   np.array(radang_dif).mean(),
                                                                   np.array(sfrsum).mean()))
 
-
+    def plot_best_sfr_vs_freq_at_point(self, x, y, x_values=None, show=True):
+        if x_values is None:
+            x_values = np.linspace(0, 0.5, 30)
+        y = [self.find_best_focus(x, y, f)[1] for f in x_values]
+        plt.plot(x_values, y)
+        if show:
+            plt.show()

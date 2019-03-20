@@ -1,5 +1,6 @@
 import colorsys
 import math
+import csv
 
 import matplotlib
 import numpy as np
@@ -8,19 +9,27 @@ from matplotlib.colors import ListedColormap
 from scipy import interpolate
 
 from lentil.constants_utils import *
+from lentil.sfr_point import SFRPoint
 
-SMOOTHING = 0.10
+SMOOTHING = 0.22
 
 class SFRField():
     """
     Represents entire image field of SFRPoints for a single image
     """
 
-    def __init__(self, points):
+    def __init__(self, points=None, pathname=None):
         """
 
         :param points: Iterable of SFRPoints, order not important
         """
+        if points is None:
+            points = []
+            with open(pathname, 'r') as sfrfile:
+                csvreader = csv.reader(sfrfile, delimiter=' ', quotechar='|')
+
+                for row in csvreader:
+                    points.append(SFRPoint(row))
         self.points = points
         np_axis = {}
         np_axis['np_x'] = None
@@ -52,7 +61,7 @@ class SFRField():
     def get_subset(self, axis):
         """
         Returns list of all points on chosen axis (or both)
-        :param axis: constant SAGGITAL or MERIDIONAL or BOTH_AXES
+        :param axis: constant SAGGITAL or MERIDIONAL or MEDIAL
         :return: list of points
         """
         return [point for point in self.points if point.is_axis(axis)]
@@ -64,7 +73,7 @@ class SFRField():
         """
         return sum((point.mtf50 for point in self.points)) / len(self.points)
 
-    def get_point_range(self, axis=BOTH_AXES):
+    def get_point_range(self, axis=MEDIAL):
         """
         Find extremeties of point locations
         :return: Tuple (x_min, y_min, x_max, y_max)
@@ -76,17 +85,17 @@ class SFRField():
         y_max = max((point.y for point in lst))
         return x_min, y_min, x_max, y_max
 
-    def build_axis_points(self, x_len=20, y_len=20, axis=BOTH_AXES):
+    def build_axis_points(self, x_len=20, y_len=20, axis=MEDIAL):
         x_min, y_min, x_max, y_max = self.get_point_range(axis)
         x_values = np.arange(x_min, x_max, (x_max - x_min) / x_len)
         y_values = np.arange(y_min, y_max, (y_max - y_min) / y_len)
         return x_values, y_values
 
-    def get_simple_interpolation_fn(self, axis=BOTH_AXES):
+    def get_simple_interpolation_fn(self, axis=MEDIAL):
         """
         Returns a simple spline interpolation callable fitted across the whole field.
 
-        :param axis: Pass constant SAGGITAL, MERIDIONAL, or BOTH_AXES
+        :param axis: Pass constant SAGGITAL, MERIDIONAL, or MEDIAL
         :return: Scipy callable which accepts x and y positions and provides interpolated value.
         """
         lst = []
@@ -97,7 +106,7 @@ class SFRField():
         fn = interpolate.SmoothBivariateSpline(x_lst, y_lst, z_lst, kx=2, ky=2, s=float("inf"))
         return fn
 
-    def interpolate_value(self, x, y, freq=0.1, axis=BOTH_AXES):
+    def interpolate_value(self, x, y, freq=0.1, axis=MEDIAL):
         """
         Provides an interpolated MTF/SFR for chosen point in field and axis. Uses a locally weighted polynomial plane.
 
@@ -105,7 +114,7 @@ class SFRField():
 
         :param x: x location
         :param y: y location
-        :param axis: Pass constants SAGGITAL, MERIDIONAL, or BOTH_AXES
+        :param axis: Pass constants SAGGITAL, MERIDIONAL, or MEDIAL
         :param freq: spacial frequency to return, -1 for mtf50
         :return: interpolated cy/px at specified frequency, or mtf50 frequency if -1 passed
         """
@@ -153,12 +162,12 @@ class SFRField():
         output = func(x, y)  # Get (buried) interpolated value at point of interest
         return np.clip(output[0][0], 1e-5, 1.0)  # Return scalar
 
-    def plot(self, freq=0.1, axis=BOTH_AXES, plot_type=1, detail=1.0,
+    def plot(self, freq=0.1, axis=MEDIAL, plot_type=1, detail=1.0,
              show=True, ax=None, alpha=0.85):
         """
         Plots SFR/MTF values for chosen axis across field
 
-        :param axis: Constant SAGGITAL, MERIDIONAL, or BOTH_AXES
+        :param axis: Constant SAGGITAL, MERIDIONAL, or MEDIAL
         :param plot_type: 0 is 3d surface, 1 is 2d contour
         :param detail: Relative detail in plot (1.0 is default)
         :return:
@@ -232,12 +241,12 @@ class SFRField():
             plt.show()
         return ax
 
-    def plot_points(self, freq=0.05, axis=BOTH_AXES):
+    def plot_points(self, freq=0.05, axis=MEDIAL):
         fig = plt.figure()
         ax = fig.add_subplot(111, projection='3d')
         ax.set_zlim(0, 1)
 
-        if axis == BOTH_AXES:
+        if axis == MEDIAL:
             axis = (SAGITTAL, MERIDIONAL)
         else:
             axis = (axis,)
@@ -253,7 +262,7 @@ class SFRField():
             ax.scatter(x_arr, y_arr, z_arr, c='r' if axis is SAGITTAL else 'b', marker='.')
         plt.show()
 
-    def get_fit_errors(self, freqs=[0.1], by_percent=False, axis=BOTH_AXES):
+    def get_fit_errors(self, freqs=[0.1], by_percent=False, axis=MEDIAL):
         try:
             numfreqs = len(freqs)
         except TypeError:
@@ -277,8 +286,8 @@ class SFRField():
                     err[n_f, n_point] = fit_val - orig_val
         return err, fit, orig
 
-    def plot_fit_errors_2d(self, freqs=[0.1], by_percent=False, axis=BOTH_AXES):
-        if axis == BOTH_AXES:
+    def plot_fit_errors_2d(self, freqs=[0.1], by_percent=False, axis=MEDIAL):
+        if axis == MEDIAL:
             axis = [SAGITTAL, MERIDIONAL]
         for axis in axis:
             errors, fit, orig = self.get_fit_errors(freqs, axis=axis, by_percent=by_percent)
