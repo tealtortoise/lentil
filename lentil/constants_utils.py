@@ -15,11 +15,17 @@ SFR_HEADER = [
 MTF50 = -1
 AUC = -2
 
+
 def diffraction_mtf(freq, fstop=8):
     if type(freq) is int and freq == AUC:
         return diffraction_mtf(np.linspace(0, 0.5-1.0/32, 32), fstop).mean()
     mulfreq = np.clip(freq / 8.0 * fstop, 0, 1)
     return 2.0 / np.pi * (np.arccos(mulfreq) - mulfreq * (1 - mulfreq ** 2) ** 0.5)
+
+
+def pixel_aperture_mtf(freq):
+    freq = np.clip(freq, 0.0001, 1.0)
+    return np.sin(np.pi*freq) / np.pi / freq
 
 
 RAW_SFR_FREQUENCIES = [x / 64 for x in range(64)]  # List of sfr frequencies in cycles/pixel

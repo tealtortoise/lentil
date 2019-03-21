@@ -111,11 +111,8 @@ class FocusSet:
                 csvwriter.writerow(["Relevant filenames"]+filenames)
                 print("Data saved to lentil_data.csv")
 
-
-
-
-    def plot_ideal_focus_field(self, freq=0.1, detail=1.0, axis=MEDIAL, color=None,
-                               plot_curvature=False, plot_type=1, show=True, ax=None, skewplane=False, alpha=0.7):
+    def plot_ideal_focus_field(self, freq=AUC, detail=1.0, axis=MEDIAL, plot_curvature=False,
+                               plot_type=0, show=True, ax=None, skewplane=False, alpha=0.7):
         """
         Plots peak sharpness at each point in field across all focus
 
@@ -142,7 +139,7 @@ class FocusSet:
             for y_idx, y in enumerate(y_values):
                 print("Finding best focus for location {} / {}".format(locs, tot_locs))
                 locs += 1
-                peak, sharp, low, high = self.find_best_focus(x, y, freq, axis)
+                peak, sharp, low, high, _, _ = self.find_best_focus(x, y, freq, axis)
 
                 sharps[y_idx, x_idx] = sharp
                 if plot_curvature:
@@ -157,7 +154,8 @@ class FocusSet:
                 print(x_int)
                 print(y_int)
                 print(focus_posits.flatten())
-                skewplane = interpolate.SmoothBivariateSpline(x_int.flatten(), y_int.flatten(), focus_posits.flatten(), kx=1, ky=1, s=float("inf"))
+                skewplane = interpolate.SmoothBivariateSpline(x_int.flatten(), y_int.flatten(),
+                                                              focus_posits.flatten(), kx=1, ky=1, s=float("inf"))
 
             for x_idx, x in enumerate(x_values):
                 for y_idx, y in enumerate(y_values):
@@ -179,7 +177,8 @@ class FocusSet:
                 contours = np.arange(int(np.amin(focus_posits)*2)/2.0 - 0.5, np.amax(focus_posits)+0.5, 0.5)
                 z_values = focus_posits
             else:
-                contours = np.arange(int(low_perf*50)/50.0 -0.02, high_perf+0.02, 0.02)
+                inc = 0.01
+                contours = np.arange(int(low_perf*50)*inc - inc, high_perf + inc, inc)
                 z_values = sharps
             colors = []
             linspaced = np.linspace(0.0, 1.0, len(contours))
@@ -236,8 +235,8 @@ class FocusSet:
                 # print(my_cmap[1,:].shape);exit()
                 new_cmap = np.ndarray((256, 4))
 
-                new_color = [color[0], color[1], color[2], 0.5 - (sheet_num ** 2) ** 0.5 * 0.4]
-                new_facecolor = [color[0], color[1], color[2], 0.3 - (sheet_num ** 2) ** 0.5 * 0.24]
+                #new_color = [color[0], color[1], color[2], 0.5 - (sheet_num ** 2) ** 0.5 * 0.4]
+                #new_facecolor = [color[0], color[1], color[2], 0.3 - (sheet_num ** 2) ** 0.5 * 0.24]
 
                 # print(low_perf, high_perf)
                 new_facecolor = plt.cm.jet(np.clip(1.0 - ((sharps - low_perf) / (high_perf - low_perf)), 0.0, 1.0))  # linear gradient along the t-axis
@@ -299,7 +298,130 @@ class FocusSet:
         plt.title('Simplest default with labels')
         plt.show()
 
-    def find_best_focus(self, x, y, freq, axis=MEDIAL, plot=False, strict=False):
+    def find_best_focus(self, x, y, freq, axis=MEDIAL, plot=False, show=False, strict=False):
+        """
+        Get peak SFR at specified location and frequency vs focus, optionally plot.
+
+        :param x: x loc
+        :param y: y loc
+        :param freq: spacial freq (or MTF50 or AUC)
+        :param axis: MERIDIONAL, SAGITTAL or MEDIAL
+        :param plot: plot to pyplot if True
+        :param strict: do not raise exception if peak cannot be determined definitively
+        :return: peak_focus_loc, peak_sfr, low_bound_focus, high_bound_focus, spline interpolation fn, curve_fn
+        """
+
+        # Go recursive if both planes needed
+        if axis == MEDIAL:
+            sag_x, sag_y, _, _ = self.find_best_focus(x, y, freq, SAGITTAL)
+            mer_x, mer_y, _, _ = self.find_best_focus(x, y, freq, MERIDIONAL)
+            mid = (sag_x + mer_x) * 0.5
+            prop = mid - math.floor(mid)
+            sag_midpeak = self.fields[int(mid)].interpolate_value(x, y, freq, SAGITTAL) * (1 - prop) + \
+                          self.fields[int(mid + 1)].interpolate_value(x, y, freq, SAGITTAL) * prop
+            mer_midpeak = self.fields[int(mid)].interpolate_value(x, y, freq, MERIDIONAL) * (1 - prop) + \
+                          self.fields[int(mid + 1)].interpolate_value(x, y, freq, MERIDIONAL) * prop
+            midpeak = ((sag_midpeak + mer_midpeak) * 0.5)
+
+            log.debug(str((mid, midpeak)))
+            return mid, midpeak, midpeak, midpeak
+
+        # Get SFR from each field
+        y_values = []
+        for field in self.fields:
+            y_values.append(field.interpolate_value(x, y, freq, axis))
+        y_values = np.array(y_values)
+        x_values = np.arange(0, len(y_values), 1)  # Arbitrary focus units
+
+        # Define gaussian curve function
+        def twogauss(gaussx, a, b, c):
+            # const = 0
+            # peaky = 0
+            # a1 = 1 / (1 + peaky)
+            # a2 = peaky / (1 + peaky)
+            # c1 = c / 1.5
+            # c2 = c * 1.5
+            a1 = a
+            c1 = c
+            wide = a1 * np.exp(-(gaussx - b) ** 2 / (2 * c1 ** 2))
+            # narrow = a2 * np.exp(-(gaussx - b) ** 2 / (2 * c2 ** 2))
+            # both = (wide + narrow) * a
+            # return both * (1-const) + const
+            return wide
+
+        # Initial fit guesses
+        highest_data_x = np.argmax(y_values)
+        highest_data_y = y_values[highest_data_x]
+        highest_within_tolerance = y_values > highest_data_y * 0.95
+        filtered_x_values = (x_values * highest_within_tolerance)[highest_within_tolerance]
+        mean_peak_x = filtered_x_values.mean()
+
+        # Define optimisation bounds
+        bounds = ((highest_data_y * 0.95, mean_peak_x - 0.9, 0.8),
+                  (highest_data_y * 1.15, mean_peak_x + 0.9, 50.0))
+
+        offsets = np.arange(len(y_values))
+        weights = np.clip(1.0 - np.abs(offsets - mean_peak_x) / 6, 0.1, 1.0) ** 2
+        log.debug("Fit weightings {}".format(weights))
+        sigmas = 1.0 / weights
+
+        fitted_params, _ = optimize.curve_fit(twogauss, x_values, y_values, bounds=bounds, sigma=sigmas,
+                                              p0=(highest_data_y, mean_peak_x, 1.0))
+        log.debug("Gaussian fit peak is {:.3f} at {:.2f}".format(fitted_params[0], fitted_params[1]))
+        log.debug("Gaussian sigma: {:.3f}".format(fitted_params[2]))
+
+        gaussfit_peak_x = fitted_params[1]
+        gaussfit_peak_y = fitted_params[0]
+
+        def curvefn(xvals):
+            return twogauss(xvals, *fitted_params)
+
+        fit_y = curvefn(x_values)
+        rms_error = np.average((fit_y - y_values)**2, weights=(y_values - y_values.min() + 0.001)**2) ** 0.5
+        rms_error_relative = rms_error / highest_data_y
+
+        log.debug("RMS fit error (normalised 1.0): {:.3f}".format(rms_error_relative))
+
+        if rms_error_relative > 0.12:
+            errorstr = "Fit aborted due to very high RMS fit error: {:.3f}".format(rms_error_relative)
+            log.warning(errorstr)
+            return float("NaN"), float("NaN"), float("NaN"), float("NaN"), None
+        elif rms_error_relative > 0.06:
+            errorstr = "High RMS fit error: {:.3f}".format(rms_error_relative)
+            log.warning(errorstr)
+            plot = True
+            show = True
+            if strict:
+                errorstr = "Strict mode, fit aborted".format(rms_error_relative)
+                log.warning(errorstr)
+                return float("NaN"), float("NaN"), float("NaN"), float("NaN"), None
+
+        interp_fn = interpolate.InterpolatedUnivariateSpline(x_values, y_values, k=2)
+
+        if plot:
+            # Plot original data
+            plt.plot(x_values, y_values, '.', color='black')
+            plt.plot(x_values, y_values, '-', color='black')
+
+            # Plot fit curve
+            x_plot = np.linspace(0, x_values.max(), 100)
+            y_gaussplot = curvefn(x_plot)
+            plt.plot(x_plot, y_gaussplot, color='green')
+
+            # Plot interpolation curve
+            y_interpplot = interp_fn(x_plot)
+            plt.plot(x_plot, y_interpplot, color='orange')
+
+
+            # Plot weights
+            plt.plot(x_values, weights * gaussfit_peak_y, '.', color='magenta')
+            if show:
+                plt.show()
+
+
+        return gaussfit_peak_x, gaussfit_peak_y, 0, 0, interp_fn, curvefn
+
+    def find_best_focus_old(self, x, y, freq, axis=MEDIAL, plot=False, strict=False):
         """
         Get peak SFR at specified location and frequency vs focus, optionally plot.
         This does not call (.show()) on the plot.
@@ -310,6 +432,8 @@ class FocusSet:
         :param plot: Draws plot if True
         :return: Tuple (focus position of peak, height of peak)
         """
+
+        SIDEPOINTS = 1
 
         if axis == MEDIAL:
             sag_x, sag_y, _, _ = self.find_best_focus(x, y, freq, SAGITTAL)
@@ -375,14 +499,20 @@ class FocusSet:
         # 2nd stage, use only fields close to peak
         closest_field_to_peak = int(np.argmax(y_values))
 
-        if False and n_high_values >= 5:
-            trimmed_x_values = x_values[high_values]
-            trimmed_y_values = y_values[high_values]
-        else:
-            trim_low = max(0, closest_field_to_peak - 2)
-            trim_high = min(len(y_values), closest_field_to_peak + 3)
-            trimmed_x_values = x_values[trim_low: trim_high]
-            trimmed_y_values = y_values[trim_low: trim_high]
+        # if False and n_high_values >= 5:
+        #     trimmed_x_values = x_values[high_values]
+        #     trimmed_y_values = y_values[high_values]
+        # else:
+        trim_low = max(0, closest_field_to_peak - SIDEPOINTS)
+        trim_high = min(len(y_values), closest_field_to_peak + SIDEPOINTS + 1)
+        trimmed_x_values = x_values[trim_low: trim_high]
+        trimmed_y_values = y_values[trim_low: trim_high]
+        offsetweights = np.arange(len(y_values))
+        newweights = np.clip(1.5 - np.abs(offsetweights - closest_field_to_peak) / 2, 0.0, 1.0) ** 2
+        weights = weights * newweights
+        # print(x_values)
+        # print(y_values)
+        # print(weights)
 
         if len(trimmed_y_values) < 3 or not 0 < closest_field_to_peak < (len(y_values) - 1):
             if not strict:
@@ -395,9 +525,9 @@ class FocusSet:
                        y_values[closest_field_to_peak], y_values[closest_field_to_peak]
             raise Exception("Not enough data points around peak to analyse")
 
-        trimmed_weights = (trimmed_y_values / np.max(trimmed_y_values)) ** 5  # Favour values closer to maximum
+        # trimmed_weights = (trimmed_y_values / np.max(trimmed_y_values)) ** 5  # Favour values closer to maximum
 
-        p_peak_x, p_peak_y, poly = fit_poly(trimmed_x_values, trimmed_y_values, trimmed_weights)
+        p_peak_x, p_peak_y, poly = fit_poly(x_values, y_values, weights)
 
         poly_acceptable = poly.copy()
         if freq < 0:
@@ -437,15 +567,18 @@ class FocusSet:
             both = (wide + narrow) * a
             return both * (1-const) + const
 
-        bounds = ((p_peak_y * 0.95, p_peak_x - 0.05, 0.1, -0.1),
-                  (p_peak_y * 1.15, p_peak_x + 0.05, 50,   0.1))
+        bounds = ((p_peak_y * 0.95, p_peak_x - 0.05, 0.1, -0.0),
+                  (p_peak_y * 1.15, p_peak_x + 0.05, 50,   0.01))
 
-        sigmas = (np.max(y_values) / y_values) ** weighting_power
+        offsetweights = np.arange(len(y_values))
+        newweights = np.clip(1.0 - np.abs(offsetweights - closest_field_to_peak) / 6, 0.1, 1.0) ** 2
+        # print(newweights, 9)
+        sigmas = (np.max(y_values) / y_values) ** weighting_power / newweights
 
         # plt.plot(x_values, sigmas)
         log.debug(str((x, y)))
         fitted_params, _ = optimize.curve_fit(twogauss, x_values, y_values, bounds=bounds, sigma=sigmas,
-                                              p0=(p_peak_y, p_peak_x, 1.0, 0.1))
+                                              p0=(p_peak_y, p_peak_x, 1.0, 0.0))
         log.debug("3rd stage peak is {:.3f} at {:.2f}".format(fitted_params[0], fitted_params[1]))
         log.debug("Gaussian sigma: {:.3f}, peaky {:.3f}".format(*fitted_params[2:]))
 
@@ -541,10 +674,12 @@ class FocusSet:
                                                                   np.array(radang_dif).mean(),
                                                                   np.array(sfrsum).mean()))
 
-    def plot_best_sfr_vs_freq_at_point(self, x, y, x_values=None, show=True):
+    def plot_best_sfr_vs_freq_at_point(self, x, y, x_values=None, secondline_fn=None, show=True):
         if x_values is None:
             x_values = np.linspace(0, 0.5, 30)
         y = [self.find_best_focus(x, y, f)[1] for f in x_values]
         plt.plot(x_values, y)
+        if secondline_fn:
+            plt.plot(x_values, secondline_fn(x_values))
         if show:
             plt.show()

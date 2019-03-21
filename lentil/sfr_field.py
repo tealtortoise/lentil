@@ -241,10 +241,11 @@ class SFRField():
             plt.show()
         return ax
 
-    def plot_points(self, freq=0.05, axis=MEDIAL):
+    def plot_points(self, freq=0.05, axis=MEDIAL, autoscale=False):
         fig = plt.figure()
         ax = fig.add_subplot(111, projection='3d')
-        ax.set_zlim(0, 1)
+        if not autoscale:
+            ax.set_zlim(0, 1)
 
         if axis == MEDIAL:
             axis = (SAGITTAL, MERIDIONAL)
