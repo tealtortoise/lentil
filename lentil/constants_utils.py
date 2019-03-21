@@ -12,6 +12,9 @@ SFR_HEADER = [
     'radialangle'
 ]
 
+CONTOUR2D = 0
+PROJECTION3D = 1
+
 MTF50 = -1
 AUC = -2
 

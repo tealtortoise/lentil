@@ -17,8 +17,9 @@ from lentil.constants_utils import *
 
 log = getLogger(__name__)
 log.setLevel(logging.INFO)
+
 ch = logging.StreamHandler()
-ch.setLevel(logging.INFO)
+ch.setLevel(logging.DEBUG)
 log.addHandler(ch)
 
 SFRFILENAME = 'edge_sfr_values.txt'
@@ -64,6 +65,7 @@ class FocusSet:
                         stubname = os.path.join(entry.name, SFRFILENAME)
                     elif entry.is_file():
                         fullpathname = entry.path
+                        stubname = entry.name
                     else:
                         continue
                     filenames.append((entrynumber, fullpathname, stubname))
@@ -77,6 +79,7 @@ class FocusSet:
                 field.filename = filename
                 self.fields.append(field)
             if not include_all:
+                self.remove_duplicated_fields()
                 self.find_relevant_fields(writepath=rootpath, freq=AUC)
 
     def find_relevant_fields(self, freq=AUC, detail=1, writepath=None):
@@ -90,7 +93,7 @@ class FocusSet:
                 for y in y_values:
                     print("Finding relevant field for point {} of {}".format(done, totalpoints))
                     done += 1
-                    fopt, _, _, _ = self.find_best_focus(x, y, freq=freq, axis=axis)
+                    fopt, _, _, _, _, _ = self.find_best_focus(x, y, freq=freq, axis=axis)
                     if fopt > max_:
                         max_ = fopt
                     if fopt < min_:
@@ -114,15 +117,17 @@ class FocusSet:
     def plot_ideal_focus_field(self, freq=AUC, detail=1.0, axis=MEDIAL, plot_curvature=False,
                                plot_type=0, show=True, ax=None, skewplane=False, alpha=0.7):
         """
-        Plots peak sharpness at each point in field across all focus
+        Plots peak sharpness / curvature at each point in field across all focus
 
         :param freq: Frequency of interest in cy/px (-1 for MTF50)
         :param detail: Alters number of points in plot (relative to 1.0)
         :param axis: SAGGITAL or MERIDIONAL or MEDIAL
-        :param plot_type: 0 is 2d contour, 1 is 3d
+        :param plot_curvature: Show curvature if 1, else show mtf/sfr
+        :param plot_type: CONTOUR2D or PROJECTION3D
         :param show: Displays plot if True
         :param ax: Pass existing matplotlib axis to use
-        :return: matplotlib axis for reuse
+        :param skewplane: True to build and use deskew plane, or pass existing plane
+        :return: matplotlib axis for reuse, skewplane for reuse
         """
         x_values, y_values = self.fields[0].build_axis_points(24*detail, 16*detail)
         focus_posits = np.ndarray((len(y_values), len(x_values)))
@@ -183,7 +188,7 @@ class FocusSet:
             colors = []
             linspaced = np.linspace(0.0, 1.0, len(contours))
             for lin, line in zip(linspaced, contours):
-                colors.append(plt.cm.viridis(lin))
+                colors.append(plt.cm.jet(1.0 - lin))
                 # colors.append(colorsys.hls_to_rgb(lin * 0.8, 0.4, 1.0))
 
             ax.set_ylim(np.amax(y_values), np.amin(y_values))
@@ -313,18 +318,25 @@ class FocusSet:
 
         # Go recursive if both planes needed
         if axis == MEDIAL:
-            sag_x, sag_y, _, _ = self.find_best_focus(x, y, freq, SAGITTAL)
-            mer_x, mer_y, _, _ = self.find_best_focus(x, y, freq, MERIDIONAL)
-            mid = (sag_x + mer_x) * 0.5
-            prop = mid - math.floor(mid)
-            sag_midpeak = self.fields[int(mid)].interpolate_value(x, y, freq, SAGITTAL) * (1 - prop) + \
-                          self.fields[int(mid + 1)].interpolate_value(x, y, freq, SAGITTAL) * prop
-            mer_midpeak = self.fields[int(mid)].interpolate_value(x, y, freq, MERIDIONAL) * (1 - prop) + \
-                          self.fields[int(mid + 1)].interpolate_value(x, y, freq, MERIDIONAL) * prop
-            midpeak = ((sag_midpeak + mer_midpeak) * 0.5)
+            sag_x, sag_y, _, _, sag_interp, _ = self.find_best_focus(x, y, freq, SAGITTAL)
+            mer_x, mer_y, _, _, mer_interp, _ = self.find_best_focus(x, y, freq, MERIDIONAL)
+            med_x = (sag_x + mer_x) * 0.5
+            if math.isnan(med_x):
+                return float("NaN"), float("NaN"), float("NaN"), float("NaN"), None, None
+            # prop = med_x - math.floor(med_x)
+            # sag_midpeak = self.fields[int(med_x)].interpolate_value(x, y, freq, SAGITTAL) * (1 - prop) + \
+            #               self.fields[int(med_x + 1)].interpolate_value(x, y, freq, SAGITTAL) * prop
+            # mer_midpeak = self.fields[int(med_x)].interpolate_value(x, y, freq, MERIDIONAL) * (1 - prop) + \
+            #               self.fields[int(med_x + 1)].interpolate_value(x, y, freq, MERIDIONAL) * prop
+            # med_y = ((sag_midpeak + mer_midpeak) * 0.5)
 
-            log.debug(str((mid, midpeak)))
-            return mid, midpeak, midpeak, midpeak
+            def interp_merge(in_x):
+                return (sag_interp(in_x) + mer_interp(in_x)) * 0.5
+
+            med_y = interp_merge(med_x)
+
+            log.debug(str((med_x, med_y)))
+            return med_x, med_y, med_y, med_y, interp_merge, None
 
         # Get SFR from each field
         y_values = []
@@ -334,20 +346,27 @@ class FocusSet:
         x_values = np.arange(0, len(y_values), 1)  # Arbitrary focus units
 
         # Define gaussian curve function
-        def twogauss(gaussx, a, b, c):
-            # const = 0
-            # peaky = 0
-            # a1 = 1 / (1 + peaky)
-            # a2 = peaky / (1 + peaky)
-            # c1 = c / 1.5
-            # c2 = c * 1.5
-            a1 = a
-            c1 = c
+        def twogauss(gaussx, a, b, c, peaky):
+            const = 0.0
+            peaky = peaky * np.clip((c - 0.7) / 2.0, 0.0, 1.0)  # No peaky at low sigma
+            a1 = 1 / (1 + peaky)
+            a2 = peaky / (1 + peaky)
+
+            c1 = c * 1.8
+            c2 = c / 1.4
+            c3 = c / 2.8
+            # a1 = a
+            # c1 = c
             wide = a1 * np.exp(-(gaussx - b) ** 2 / (2 * c1 ** 2))
-            # narrow = a2 * np.exp(-(gaussx - b) ** 2 / (2 * c2 ** 2))
-            # both = (wide + narrow) * a
-            # return both * (1-const) + const
-            return wide
+            narrow = a2 * np.exp(-(gaussx - b) ** 2 / (2 * c2 ** 2))
+            extranarrow = a1 * np.exp(-(gaussx - b) ** 2 / (2 * c3 ** 2))
+            if 0 and peaky > 0:
+                both = (wide + (narrow * 3 + extranarrow) * 0.25) * a
+            else:
+                both = (wide + narrow) * a
+            return both * (1-const) + const
+            # return wide
+
 
         # Initial fit guesses
         highest_data_x = np.argmax(y_values)
@@ -357,18 +376,35 @@ class FocusSet:
         mean_peak_x = filtered_x_values.mean()
 
         # Define optimisation bounds
-        bounds = ((highest_data_y * 0.95, mean_peak_x - 0.9, 0.8),
-                  (highest_data_y * 1.15, mean_peak_x + 0.9, 50.0))
+        bounds = ((highest_data_y * 0.95, mean_peak_x - 0.9, 0.8, -0.3),
+                  (highest_data_y * 1.15, mean_peak_x + 0.9, 50.0, 1.3))
 
-        offsets = np.arange(len(y_values))
-        weights = np.clip(1.0 - np.abs(offsets - mean_peak_x) / 6, 0.1, 1.0) ** 2
+        widen = 1.0
+        totaltarget = 1.0
+        for round in range(1):  # Disable
+            offsets = np.arange(len(y_values)) - mean_peak_x  # x-index vs peak estimate
+            weights_a = np.clip(1.2 - np.abs(offsets) / 11 / widen, 0.1, 1.0) ** 2  # Weight small offsets higher
+            norm_y_values = y_values / y_values.max()  # Normalise to 1.0
+            weights_b = np.clip(norm_y_values - 0.4, 0.0001, 1.0)  # Weight higher points higher, ignore below 0.4
+            weights = weights_a * weights_b  # Merge
+            weights = weights / weights.max()  # Normalise
+            total = (weights * y_values).sum()
+            # print(weights_a)
+            # print(weights_b)
+            # print(weights)
+            print("Widen {} Total {:.3f}".format(widen, total))
+            if total < totaltarget:
+                widen *= totaltarget / total
+            else:
+                break
         log.debug("Fit weightings {}".format(weights))
         sigmas = 1.0 / weights
 
         fitted_params, _ = optimize.curve_fit(twogauss, x_values, y_values, bounds=bounds, sigma=sigmas,
-                                              p0=(highest_data_y, mean_peak_x, 1.0))
+                                              p0=(highest_data_y, mean_peak_x, 1.0, 0.05))
         log.debug("Gaussian fit peak is {:.3f} at {:.2f}".format(fitted_params[0], fitted_params[1]))
         log.debug("Gaussian sigma: {:.3f}".format(fitted_params[2]))
+        log.debug("Gaussian peaky: {:.3f}".format(fitted_params[3]))
 
         gaussfit_peak_x = fitted_params[1]
         gaussfit_peak_y = fitted_params[0]
@@ -377,24 +413,28 @@ class FocusSet:
             return twogauss(xvals, *fitted_params)
 
         fit_y = curvefn(x_values)
-        rms_error = np.average((fit_y - y_values)**2, weights=(y_values - y_values.min() + 0.001)**2) ** 0.5
-        rms_error_relative = rms_error / highest_data_y
+        errorweights = np.clip((y_values - y_values.max() * 0.8), 0.000001, 1.0)**1
+        mean_abs_error = np.average(np.abs(fit_y - y_values), weights=errorweights)
+        mean_abs_error_rel = mean_abs_error / highest_data_y
 
-        log.debug("RMS fit error (normalised 1.0): {:.3f}".format(rms_error_relative))
+        log.debug("RMS fit error (normalised 1.0): {:.3f}".format(mean_abs_error_rel))
 
-        if rms_error_relative > 0.12:
-            errorstr = "Fit aborted due to very high RMS fit error: {:.3f}".format(rms_error_relative)
+        if mean_abs_error_rel > 0.12:
+            errorstr = "Very high fit error: {:.3f}".format(mean_abs_error_rel)
             log.warning(errorstr)
-            return float("NaN"), float("NaN"), float("NaN"), float("NaN"), None
-        elif rms_error_relative > 0.06:
-            errorstr = "High RMS fit error: {:.3f}".format(rms_error_relative)
+
+            # plot = True
+            # show = True
+            # return float("NaN"), float("NaN"), float("NaN"), float("NaN"), None, None
+        elif mean_abs_error_rel > 0.06:
+            errorstr = "High fit error: {:.3f}".format(mean_abs_error_rel)
             log.warning(errorstr)
-            plot = True
-            show = True
+            # plot = True
+            # show = True
             if strict:
-                errorstr = "Strict mode, fit aborted".format(rms_error_relative)
+                errorstr = "Strict mode, fit aborted".format(mean_abs_error_rel)
                 log.warning(errorstr)
-                return float("NaN"), float("NaN"), float("NaN"), float("NaN"), None
+                return float("NaN"), float("NaN"), float("NaN"), float("NaN"), None, None
 
         interp_fn = interpolate.InterpolatedUnivariateSpline(x_values, y_values, k=2)
 
@@ -407,6 +447,7 @@ class FocusSet:
             x_plot = np.linspace(0, x_values.max(), 100)
             y_gaussplot = curvefn(x_plot)
             plt.plot(x_plot, y_gaussplot, color='green')
+            plt.plot(x_values, errorweights / errorweights.max() * y_values.max(), '--', color='gray')
 
             # Plot interpolation curve
             y_interpplot = interp_fn(x_plot)
@@ -414,10 +455,9 @@ class FocusSet:
 
 
             # Plot weights
-            plt.plot(x_values, weights * gaussfit_peak_y, '.', color='magenta')
+            plt.plot(x_values, weights * gaussfit_peak_y, '--', color='magenta')
             if show:
                 plt.show()
-
 
         return gaussfit_peak_x, gaussfit_peak_y, 0, 0, interp_fn, curvefn
 
