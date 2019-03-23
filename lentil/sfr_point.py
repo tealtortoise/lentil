@@ -11,23 +11,40 @@ class SFRPoint:
     Holds all data for one SFR edge analysis point
     """
 
-    def __init__(self, rowdata, pixelsize=None):
+    def __init__(self, rowdata=None, rawdata=None, pixelsize=None, calibration=None):
         """
         Processes row from csv reader
 
         :param rowdata: raw from csv reader
         :param pixelsize: pixel size in metres if required
         """
-        self.x = float(rowdata[1])
-        self.y = float(rowdata[2])
-        self.angle = float(rowdata[3])
-        self.radialangle = float(rowdata[4])
-        self.raw_sfr_data = [float(cell) for cell in rowdata[5:-1]]
-        self.auc = np.array(self.raw_sfr_data[:32]).mean()
+        if rowdata is not None:
+            self.x = float(rowdata[1])
+            self.y = float(rowdata[2])
+            self.angle = float(rowdata[3])
+            self.radialangle = float(rowdata[4])
+            self.raw_sfr_data = np.array([float(cell) for cell in rowdata[5:-1]])
+        elif rawdata is not None:
+            if len(rawdata) < 64:
+                self.raw_sfr_data = np.pad(rawdata, (0, 32), 'constant', constant_values=0.0)
+            else:
+                self.raw_sfr_data = rawdata
+                self.x = 0
+                self.y = 0
+                self.angle = 0
+                self.radialangle = 0
+        else:
+            raise ValueError("No data!")
         self.pixelsize = pixelsize or lentil.constants_utils.DEFAULT_PIXEL_SIZE
         self._interpolate_fn = None
         self._mtf50 = None
         assert len(self.raw_sfr_data) == 64
+
+        if calibration is not None:
+            calibration_padded = np.pad(calibration, (0, 32), 'constant', constant_values=0.0)
+            self.raw_sfr_data = self.raw_sfr_data * calibration_padded
+
+        self.auc = self.raw_sfr_data[:32].mean()
 
     def get_freq(self, cy_px=None, lp_mm=None):
         """
@@ -51,6 +68,8 @@ class SFRPoint:
                 return self.mtf50
         if cy_px == AUC:
             return self.auc
+        if cy_px == ACUTANCE:
+            return self.get_acutance()
         if not 0.0 <= cy_px < 1.0:
             raise AttributeError("Frequency must be between 0 and twice nyquist, or a specified constant")
 
@@ -134,6 +153,21 @@ class SFRPoint:
         for a, b in zip(self.raw_sfr_data[:24], pointb.raw_sfr_data[:24]):
             sfrsum += abs(a - b)
         return x_dif, y_dif, angle_dif, radang_dif, sfrsum
+
+    def get_acutance(self, print_height=ACUTANCE_PRINT_HEIGHT, viewing_distance=ACUTANCE_VIEWING_DISTANCE):
+        return find_acutance(self.raw_sfr_data, print_height, viewing_distance)
+
+    def plot_acutance_vs_printsize(self, heightrange=(0.1, 1.0), show=True):
+        height_arr = np.linspace(heightrange[0], heightrange[1], 12)
+        acutance_arr = []
+        for height in height_arr:
+            acutance_arr.append(self.get_acutance(print_height=height))
+        plt.plot(height_arr, acutance_arr)
+        plt.xlabel("Print height (m)")
+        plt.ylabel("CIPQ Acutance")
+        plt.title("Acutance vs print height (square root viewing distance)")
+        if show:
+            plt.show()
 
 
     def __str__(self):

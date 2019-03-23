@@ -12,13 +12,14 @@ from lentil.constants_utils import *
 from lentil.sfr_point import SFRPoint
 
 SMOOTHING = 0.22
+FUNCSTORE = None
 
 class SFRField():
     """
     Represents entire image field of SFRPoints for a single image
     """
 
-    def __init__(self, points=None, pathname=None):
+    def __init__(self, points=None, pathname=None, calibration=None):
         """
 
         :param points: Iterable of SFRPoints, order not important
@@ -29,7 +30,7 @@ class SFRField():
                 csvreader = csv.reader(sfrfile, delimiter=' ', quotechar='|')
 
                 for row in csvreader:
-                    points.append(SFRPoint(row))
+                    points.append(SFRPoint(row, calibration=calibration))
         self.points = points
         np_axis = {}
         np_axis['np_x'] = None
@@ -41,7 +42,7 @@ class SFRField():
         self.np_dict = {SAGITTAL: np_axis, MERIDIONAL: np_axis2}
 
         self.smoothing = SMOOTHING
-
+        self.boundtup = {}
     @property
     def saggital_points(self):
         """
@@ -78,12 +79,16 @@ class SFRField():
         Find extremeties of point locations
         :return: Tuple (x_min, y_min, x_max, y_max)
         """
+        if axis in self.boundtup:
+            return self.boundtup[axis]
         lst = self.get_subset(axis)
         x_min = min((point.x for point in lst))
         x_max = max((point.x for point in lst))
         y_min = min((point.y for point in lst))
         y_max = max((point.y for point in lst))
-        return x_min, y_min, x_max, y_max
+        tup = x_min, y_min, x_max, y_max
+        self.boundtup[axis] = tup
+        return tup
 
     def build_axis_points(self, x_len=20, y_len=20, axis=MEDIAL):
         x_min, y_min, x_max, y_max = self.get_point_range(axis)
@@ -118,6 +123,7 @@ class SFRField():
         :param freq: spacial frequency to return, -1 for mtf50
         :return: interpolated cy/px at specified frequency, or mtf50 frequency if -1 passed
         """
+        # return 0.3
         if self.np_dict[axis]['np_x'] is None or self.np_dict[axis]['np_sfr_freq'] != freq:
             lst = []
             for point in self.get_subset(axis):
@@ -137,7 +143,6 @@ class SFRField():
         # Calculate distance of each edge location to input location on each axis
         x_distances = (x_arr - x)
         y_distances = (y_arr - y)
-
         # Determine scatter of these points
         x_distance_rms = np.sqrt((x_distances ** 2).mean()) * self.smoothing
         y_distance_rms = np.sqrt((y_distances ** 2).mean()) * self.smoothing
@@ -145,20 +150,25 @@ class SFRField():
         # Calculate distance in 2d plane
         distances = np.sqrt(
             ((x_distances) / x_distance_rms) ** 2 + ((y_distances) / y_distance_rms) ** 2)
-
         # Determine weightings allowing more weight to nearby points
         exp_weights = np.exp(1 - distances) * 0.5
+        # return 0.3
+
         raised_cos_weights = np.cos(np.clip(distances / 1.4 * math.pi, 0.0, math.pi)) + 1.0
         weights = (exp_weights * 1.6 + raised_cos_weights * 0.4)
 
         x_min, y_min, x_max, y_max = self.get_point_range(axis)
         bbox = [x_min, x_max, y_min, y_max]
 
+        nr = weights > (weights.max() * 0.1)  # Is point nearby?
+        # print(is_point_nearby.sum(), len(weights))
+
         order = 2  # Spline order
+        # return 0.3
 
         # Build spline surface
-        func = interpolate.SmoothBivariateSpline(x_arr, y_arr, z_arr, bbox=bbox,
-                                                 w=weights, kx=order, ky=order, s=float("inf"))
+        func = interpolate.SmoothBivariateSpline(x_arr[nr], y_arr[nr], z_arr[nr], bbox=bbox,
+                                             w=weights[nr], kx=order, ky=order, s=float("inf"))
         output = func(x, y)  # Get (buried) interpolated value at point of interest
         return np.clip(output[0][0], 1e-5, 1.0)  # Return scalar
 
