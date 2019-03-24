@@ -41,10 +41,10 @@ class SFRPoint:
         assert len(self.raw_sfr_data) == 64
 
         if calibration is not None:
-            calibration_padded = np.pad(calibration, (0, 32), 'constant', constant_values=0.0)
-            self.raw_sfr_data = self.raw_sfr_data * calibration_padded
-
-        self.auc = self.raw_sfr_data[:32].mean()
+            calibration_padded = np.pad(calibration, (0, 64 - len(calibration)), 'constant', constant_values=0.0)
+            self.calibration = calibration_padded
+        else:
+            self.calibration = np.ones((64,))
 
     def get_freq(self, cy_px=None, lp_mm=None):
         """
@@ -77,12 +77,17 @@ class SFRPoint:
 
     @property
     def interpolate_fn(self):
-        if self._interpolate_fn is None:
-            # Build interpolation function from raw data
-            self._interpolate_fn = interpolate.InterpolatedUnivariateSpline(lentil.constants_utils.RAW_SFR_FREQUENCIES,
-                                                                            self.raw_sfr_data, k=1)
-        return self._interpolate_fn
+        return interpolate.InterpolatedUnivariateSpline(lentil.constants_utils.RAW_SFR_FREQUENCIES,
+                                                        self.sfr, k=1)
 
+    @property
+    def calibration_fn(self):
+        return interpolate.InterpolatedUnivariateSpline(lentil.constants_utils.RAW_SFR_FREQUENCIES,
+                                                        self.calibration, k=1)
+
+    @property
+    def sfr(self):
+        return self.raw_sfr_data * self.calibration
 
     @property
     def mtf50(self):
@@ -94,10 +99,7 @@ class SFRPoint:
 
         def callable_(fr):
             return self.interpolate_fn(fr) - 0.5
-
-        if self._mtf50 is None:
-            self._mtf50 = optimize.newton(callable_, 0.05)
-        return self._mtf50
+        return optimize.newton(callable_, 0.05, tol=0.0003)
 
     @property
     def mtf50_lpmm(self):
@@ -154,8 +156,12 @@ class SFRPoint:
             sfrsum += abs(a - b)
         return x_dif, y_dif, angle_dif, radang_dif, sfrsum
 
+    @property
+    def auc(self):
+        return (self.raw_sfr_data * self.calibration)[:32].mean()
+
     def get_acutance(self, print_height=ACUTANCE_PRINT_HEIGHT, viewing_distance=ACUTANCE_VIEWING_DISTANCE):
-        return find_acutance(self.raw_sfr_data, print_height, viewing_distance)
+        return calc_acutance(self.raw_sfr_data, print_height, viewing_distance)
 
     def plot_acutance_vs_printsize(self, heightrange=(0.1, 1.0), show=True):
         height_arr = np.linspace(heightrange[0], heightrange[1], 12)
@@ -169,6 +175,12 @@ class SFRPoint:
         if show:
             plt.show()
 
+    def set_calibration_sharpen(self, amount, radius, stack=False):
+        cal = 1.0 + (1.0 - gaussian_fourier(radius * 2.0)) * amount
+        if stack:
+            self.calibration = self.calibration * cal
+        else:
+            self.calibration = cal
 
     def __str__(self):
         return "x: {:.0f}, y: {:.0f}, angle: {:.0f}, radial angle: {:.0f}".format(self.x,

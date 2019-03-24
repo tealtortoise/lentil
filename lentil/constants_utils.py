@@ -1,4 +1,7 @@
 import numpy as np
+import  matplotlib.pyplot as plt
+
+SFRFILENAME = 'edge_sfr_values.txt'
 
 DEFAULT_PIXEL_SIZE = 4e-6
 SAGITTAL = "SAGITTAL"
@@ -12,11 +15,19 @@ SFR_HEADER = [
     'radialangle'
 ]
 
+FIELD_SMOOTHING = 0.32
+
 LOW_BENCHMARK_FSTOP = 24
 HIGH_BENCHBARK_FSTOP = 3.4
 
-ACUTANCE_PRINT_HEIGHT = 20*0.0254
-ACUTANCE_VIEWING_DISTANCE = 0.25
+IMAGE_WIDTH = 6000
+IMAGE_HEIGHT = 4000
+IMAGE_DIAGONAL = (IMAGE_WIDTH**2 + IMAGE_HEIGHT**2)**0.5
+
+DEFAULT_SENSOR_DIAGONAL = IMAGE_DIAGONAL * DEFAULT_PIXEL_SIZE
+
+ACUTANCE_PRINT_HEIGHT = 0.6
+ACUTANCE_VIEWING_DISTANCE = 0.74
 
 CONTOUR2D = 0
 PROJECTION3D = 1
@@ -30,12 +41,12 @@ def diffraction_mtf(freq, fstop=8):
     if type(freq) is int and freq == AUC:
         return diffraction_mtf(np.linspace(0, 0.5-1.0/32, 32), fstop).mean()
     if type(freq) is int and freq == ACUTANCE:
-        return find_acutance(diffraction_mtf(RAW_SFR_FREQUENCIES, fstop))
+        return calc_acutance(diffraction_mtf(RAW_SFR_FREQUENCIES, fstop))
     mulfreq = np.clip(freq / 8.0 * fstop, 0, 1)
     return 2.0 / np.pi * (np.arccos(mulfreq) - mulfreq * (1 - mulfreq ** 2) ** 0.5)
 
 
-def find_acutance(sfr, print_height=ACUTANCE_PRINT_HEIGHT, viewing_distance=ACUTANCE_VIEWING_DISTANCE):
+def calc_acutance(sfr, print_height=ACUTANCE_PRINT_HEIGHT, viewing_distance=ACUTANCE_VIEWING_DISTANCE):
         if viewing_distance is None:
             viewing_distance = max(0.15, print_height ** 0.5)
 
@@ -45,18 +56,21 @@ def find_acutance(sfr, print_height=ACUTANCE_PRINT_HEIGHT, viewing_distance=ACUT
         if len(sfr) < 64:
             sfr = np.pad(sfr, (0, 64 - len(sfr)), 'constant', constant_values=0.0)
 
-        enlargement = print_height / 0.016
-        print_cy_per_m = RAW_SFR_FREQUENCIES / DEFAULT_PIXEL_SIZE / enlargement
-        cy_per_rad = print_cy_per_m * viewing_distance
+        print_cy_per_m = RAW_SFR_FREQUENCIES * 4000 / print_height
+        cy_per_rad = print_cy_per_m * viewing_distance  # atan Small angle approximation
         cy_per_degree = cy_per_rad / 180 * np.pi
 
         specific_csf = csf(cy_per_degree)
-        # print(print_cy_per_m)
-        # print(cy_per_degree)
 
         total = (specific_csf * sfr).sum() / specific_csf.sum()
         return total
 
+
+def gaussian_fourier(c):
+    f = RAW_SFR_FREQUENCIES
+    gauss = np.exp(-f ** 2 * c ** 2 * 0.5)
+    # plt.plot(f, gauss);plt.show()
+    return gauss
 
 
 def pixel_aperture_mtf(freq):
@@ -64,9 +78,22 @@ def pixel_aperture_mtf(freq):
     return np.sin(np.pi*freq) / np.pi / freq
 
 
+def calc_image_height(x, y):
+    """
+    Calculate image height (distance from centre) ranging from 0.0 to 1.0
+
+    :param x: x loc(s)
+    :param y: y loc(s)
+    :return: height(s)
+    """
+    img_height = (((IMAGE_WIDTH / 2) - x) ** 2 + ((IMAGE_HEIGHT / 2) - y) ** 2) ** 0.5 / IMAGE_DIAGONAL
+    return img_height
+
+
 RAW_SFR_FREQUENCIES = np.array([x / 64 for x in range(64)])  # List of sfr frequencies in cycles/pixel
 
-GOOD = [1.        , 0.98582051, 0.95216779, 0.91605742, 0.88585631, 0.86172936,
+
+GOOD = [1., 0.98582051, 0.95216779, 0.91605742, 0.88585631, 0.86172936,
      0.84093781, 0.82116408, 0.80170952, 0.78201686, 0.76154796, 0.73985244,
      0.7166293, 0.69158089, 0.66423885, 0.63510484, 0.60407738, 0.57122645,
      0.53737249, 0.50266147, 0.46764089, 0.43269842, 0.39822897, 0.36466347,

@@ -11,7 +11,6 @@ from scipy import interpolate
 from lentil.constants_utils import *
 from lentil.sfr_point import SFRPoint
 
-SMOOTHING = 0.22
 FUNCSTORE = None
 
 class SFRField():
@@ -41,7 +40,7 @@ class SFRField():
         np_axis2 = np_axis.copy()
         self.np_dict = {SAGITTAL: np_axis, MERIDIONAL: np_axis2}
 
-        self.smoothing = SMOOTHING
+        self.smoothing = FIELD_SMOOTHING
         self.boundtup = {}
     @property
     def saggital_points(self):
@@ -92,8 +91,10 @@ class SFRField():
 
     def build_axis_points(self, x_len=20, y_len=20, axis=MEDIAL):
         x_min, y_min, x_max, y_max = self.get_point_range(axis)
-        x_values = np.arange(x_min, x_max, (x_max - x_min) / x_len)
-        y_values = np.arange(y_min, y_max, (y_max - y_min) / y_len)
+        # x_values = np.arange(x_min, x_max, (x_max - x_min) / x_len)
+        # y_values = np.arange(y_min, y_max, (y_max - y_min) / y_len)
+        x_values = np.linspace(x_min, x_max, x_len)
+        y_values = np.linspace(y_min, y_max, y_len)
         return x_values, y_values
 
     def get_simple_interpolation_fn(self, axis=MEDIAL):
@@ -170,7 +171,7 @@ class SFRField():
         func = interpolate.SmoothBivariateSpline(x_arr[nr], y_arr[nr], z_arr[nr], bbox=bbox,
                                              w=weights[nr], kx=order, ky=order, s=float("inf"))
         output = func(x, y)  # Get (buried) interpolated value at point of interest
-        return np.clip(output[0][0], 1e-5, 1.0)  # Return scalar
+        return np.clip(output[0][0], 1e-5, np.inf)  # Return scalar
 
     def plot(self, freq=0.1, axis=MEDIAL, plot_type=1, detail=1.0,
              show=True, ax=None, alpha=0.85):
@@ -353,3 +354,8 @@ class SFRField():
             print("")
             print("  RMS Error / RMS Original in %    {:.1f} ".format(error_rms / origrms *100))
             print()
+
+
+    def set_calibration_sharpen(self, amount, radius, stack=False):
+        for point in self.points:
+            point.set_calibration_sharpen(amount, radius, stack)

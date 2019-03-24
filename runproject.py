@@ -10,7 +10,7 @@ PATHS = [
     # "/mnt/mtfm/Bernard/",
 
     # "/mnt/mtfm/56mm/f1.2/mtfm/",
-    # "/mnt/mtfm/56mm/f2.8/mtfm/",
+    "/mnt/mtfm/56mm/f2.8/mtfm/",
     # "/mnt/mtfm/56mm/f5.6/mtfm/",
     # "/mnt/mtfm/56mm/f8/mtfm/",
     # "/mnt/mtfm/56mm/f8/mtfm/",
@@ -29,7 +29,7 @@ PATHS = [
     # "/mnt/mtfm/16-55mm/55mm/f8/mtfm/",
     # "/mnt/mtfm/16-55mm/55mm/f11/mtfm/",
 
-    "/mnt/mtfm/55-200mm/200mm/f4.8/mtfm/",
+    # "/mnt/mtfm/55-200mm/200mm/f4.8/mtfm/",
     # "/mnt/mtfm/55-200mm/200mm/f5.6/mtfm/",
     # "/mnt/mtfm/55-200mm/200mm/f8/mtfm/",
     # "/mnt/mtfm/55-200mm/200mm/f11/mtfm/",
@@ -68,15 +68,24 @@ calibration = 1#None if recalibrate else True
 for path in PATHS:
 
     focusset = FocusSet(path, rescan=0, include_all=0, use_calibration=calibration)
-    bestpoint = focusset.get_peak_sfr()
-    bestpoint.plot_acutance_vs_printsize()
+    # focusset.find_compromise_focus(detail=0.8, axis=MERIDIONAL, plot_freq=0.35)
+    # bestpoint = focusset.get_peak_sfr(plot=1, show=0)
+    # print(1)
+    # focusset.set_calibration_sharpen(18.8, 0.3, stack=True)
+    # focusset.set_calibration_sharpen(1.55, 1.6, stack=True)
+    # focusset.set_calibration_sharpen(0.4, 8.0, stack=True)
+    # print(2)
+    # bestpoint = focusset.get_peak_sfr(plot=1, show=1)
+
+    # exit()
+    # bestpoint = focusset.get_peak_sfr()
+    # bestpoint.plot_acutance_vs_printsize()
     # focusset.fields[0].points[100].get_acutance(1.0, 0.27)
     # exit()
     # focusset.get_peak_sfr()
     # calibration = focusset.build_calibration(fstop=5.6, writetofile=recalibrate)
     # for field in focusset.fields:
     #     field.plot_points(AUC, SAGITTAL, autoscale=True)
-if 0:
     # for x in np.linspace(0, 6000, 12):
     #     print(focusset.find_best_focus(x, x*2/3, 0.1, SAGITTAL, plot=True))
     #     plt.show()
@@ -89,12 +98,12 @@ if 0:
     skewplane = 0
     detail = 0.6
     plot_type = CONTOUR2D
-    # plot_type = PROJECTION3D
-    plot_curvature = 0
-    freq = ACUTANCE
+    plot_type = PROJECTION3D
+    plot_curvature = 1
+    freq = AUC
     ax = None
     ax, skewplane = focusset.plot_ideal_focus_field(detail=detail, show=False, freq=freq,
-                                                    ax=ax, axis=MEDIAL,
+                                                    ax=ax, axis=MERIDIONAL,
                                                     plot_type=plot_type, plot_curvature=plot_curvature,
                                                     skewplane=skewplane, alpha=0.6, title=focusset.lens_name)
 
