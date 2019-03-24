@@ -1,18 +1,14 @@
-import colorsys
 import csv
 import math
 import os
 import logging
 from logging import getLogger
 
-import matplotlib
-import numpy as np
-from matplotlib import pyplot as plt
-from matplotlib.colors import ListedColormap
 from scipy import optimize, interpolate, stats
 
 from lentil.sfr_point import SFRPoint
 from lentil.sfr_field import SFRField
+from lentil.plot_utils import FieldPlot
 from lentil.constants_utils import *
 
 log = getLogger(__name__)
@@ -21,6 +17,36 @@ log.setLevel(logging.INFO)
 ch = logging.StreamHandler()
 ch.setLevel(logging.DEBUG)
 log.addHandler(ch)
+
+
+class FocusPos:
+    def __init__(self, focuspos=None, sharp=None, interpfn=None, curvefn=None, lowbound=None, highbound=None):
+        self.focuspos = focuspos
+        self.sharp = sharp
+        self.interpfn = interpfn
+        self.curvefn = curvefn
+        self.lowbound = lowbound
+        self.highbound = highbound
+
+    @classmethod
+    def get_midpoint(cls, a, b):
+        new = cls()
+        mid_x = (a.focuspos + b.focuspos) * 0.5
+        new.focuspos = mid_x
+
+        def interp_merge(in_x):
+            return (a.interpfn(in_x) + b.interpfn(in_x)) * 0.5
+
+        new.sharp = interp_merge(mid_x)
+        new.interpfn = interp_merge
+        return new
+
+
+class FitError(Exception):
+    def __init__(self, fit_tuple=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fit_tuple = fit_tuple
+
 
 class FocusSet:
     """
@@ -111,7 +137,7 @@ class FocusSet:
                 for y in y_values:
                     print("Finding relevant field for point {} of {}".format(done, totalpoints))
                     done += 1
-                    fopt, _, _, _, _, _ = self.find_best_focus(x, y, freq=freq, axis=axis)
+                    fopt = self.find_best_focus(x, y, freq=freq, axis=axis).focuspos
                     if fopt > max_:
                         max_ = fopt
                     if fopt < min_:
@@ -159,19 +185,19 @@ class FocusSet:
             z_values_low = focus_posits.copy()
             z_values_high = focus_posits.copy()
 
-        tot_locs = len(focus_posits)
+        tot_locs = len(focus_posits.flatten())
         locs = 1
 
         for x_idx, y_idx, x, y in gridit:
             print("Finding best focus for location {} / {}".format(locs, tot_locs))
             locs += 1
-            peak, sharp, low, high, _, _ = self.find_best_focus(x, y, freq, axis)
+            bestfocus = self.find_best_focus(x, y, freq, axis)
 
-            sharps[y_idx, x_idx] = sharp
+            sharps[y_idx, x_idx] = bestfocus.sharp
             if plot_curvature:
-                focus_posits[y_idx, x_idx] = peak
-                z_values_low[y_idx, x_idx] = low
-                z_values_high[y_idx, x_idx] = high
+                focus_posits[y_idx, x_idx] = bestfocus.focuspos
+                z_values_low[y_idx, x_idx] = bestfocus.lowbound
+                z_values_high[y_idx, x_idx] = bestfocus.highbound
 
         if plot_curvature and skewplane:
             if "__call__" not in dir(skewplane):
@@ -190,42 +216,39 @@ class FocusSet:
                     z_values_low[y_idx, x_idx] -= sheet
                     z_values_high[y_idx, x_idx] -= sheet
 
-        if freq == ACUTANCE:
-            low_perf = 0.4
-            high_perf = 1.0
-        else:
-            low_perf = diffraction_mtf(freq, LOW_BENCHMARK_FSTOP)
-            high_perf = diffraction_mtf(freq, HIGH_BENCHBARK_FSTOP)
-
         if plot_type == CONTOUR2D:
-            fig, ax = plt.subplots()
+            plot = FieldPlot()
+            plot.xticks = x_values
+            plot.yticks = y_values
+            plot.set_diffraction_limits(freq)
+
             if plot_curvature:
-                contours = np.arange(int(np.amin(focus_posits)*2)/2.0 - 0.5, np.amax(focus_posits)+0.5, 0.5)
-                z_values = focus_posits
+                # contours = np.arange(int(np.amin(focus_posits)*2)/2.0 - 0.5, np.amax(focus_posits)+0.5, 0.5)
+                plot.zdata = focus_posits
             else:
-                inc = np.clip((high_perf - low_perf) / 20, 0.002, 0.05)
-                # inc = 0.01
-
-                contours = np.arange(int(low_perf/inc)*inc - inc, high_perf + inc, inc)
-                # contours = np.arange(0.0, 1.0, 0.005)
-                z_values = sharps
-            colors = []
-            linspaced = np.linspace(0.0, 1.0, len(contours))
-            for lin, line in zip(linspaced, contours):
-                colors.append(plt.cm.jet(1.0 - lin))
-                # colors.append(colorsys.hls_to_rgb(lin * 0.8, 0.4, 1.0))
-            print(z_values)
-            print(contours)
-            print(colors)
-
-            ax.set_ylim(np.amax(y_values), np.amin(y_values))
-            CS = ax.contourf(x_values, y_values, z_values, contours, colors=colors, extend='both')
-            CS2 = ax.contour(x_values, y_values, z_values, contours, colors=('black',))
-            plt.xlabel("Image position x")
-            plt.ylabel("Image position y")
-            plt.clabel(CS2, inline=1, fontsize=10)
-            plt.title(title)
+                plot.zdata = sharps
+            plot.yreverse = True
+            plot.xlabel = "Image position x"
+            plot.ylabel = "Image position y"
+            plot.title = title
+            ax = plot.contour2d(ax, show=show)
         else:
+            plot = FieldPlot()
+
+            plot.set_diffraction_limits(freq, graphaxis="w")
+
+            plot.xticks = x_values
+            plot.yticks = y_values
+            plot.set_diffraction_limits(freq)
+            plot.yreverse = True
+            plot.xlabel = "Image position x"
+            plot.ylabel = "Image position y"
+            plot.zlabel = "Best focus"
+            plot.title = title
+            plot.zdata = focus_posits
+            plot.wdata = sharps
+            ax = plot.projection3d(ax)
+            """
             if ax is None:
                 fig = plt.figure()
             passed_ax = ax
@@ -298,8 +321,7 @@ class FocusSet:
                 ax.set_title(title)
             if passed_ax is None:
                 pass# fig.colorbar(surf, shrink=0.5, aspect=5)
-        if show:
-            plt.show()
+            """
         return ax, skewplane
 
     def plot_field_curvature_strip_contour(self, freq=0.1, axis=MERIDIONAL):
@@ -348,27 +370,9 @@ class FocusSet:
         """
         # Go recursive if both planes needed
         if axis == MEDIAL:
-            sag_x, sag_y, _, _, sag_interp, _ = self.find_best_focus(x, y, freq, SAGITTAL)
-            mer_x, mer_y, _, _, mer_interp, _ = self.find_best_focus(x, y, freq, MERIDIONAL)
-            # return 3, 0.5, 0, 0, None, None
-
-            med_x = (sag_x + mer_x) * 0.5
-            if math.isnan(med_x):
-                return float("NaN"), float("NaN"), float("NaN"), float("NaN"), None, None
-            # prop = med_x - math.floor(med_x)
-            # sag_midpeak = self.fields[int(med_x)].interpolate_value(x, y, freq, SAGITTAL) * (1 - prop) + \
-            #               self.fields[int(med_x + 1)].interpolate_value(x, y, freq, SAGITTAL) * prop
-            # mer_midpeak = self.fields[int(med_x)].interpolate_value(x, y, freq, MERIDIONAL) * (1 - prop) + \
-            #               self.fields[int(med_x + 1)].interpolate_value(x, y, freq, MERIDIONAL) * prop
-            # med_y = ((sag_midpeak + mer_midpeak) * 0.5)
-
-            def interp_merge(in_x):
-                return (sag_interp(in_x) + mer_interp(in_x)) * 0.5
-
-            med_y = interp_merge(med_x)
-
-            log.debug(str((med_x, med_y)))
-            return med_x, med_y, med_y, med_y, interp_merge, None
+            best_s = self.find_best_focus(x, y, freq, SAGITTAL)
+            best_m = self.find_best_focus(x, y, freq, MERIDIONAL)
+            return FocusPos.get_midpoint(best_s, best_m)
 
         # Get SFR from each field
         y_values = []
@@ -376,23 +380,6 @@ class FocusSet:
             y_values.append(field.interpolate_value(x, y, freq, axis))
         y_values = np.array(y_values)
         x_values = np.arange(0, len(y_values), 1)  # Arbitrary focus units
-        # return 3, 0.5, 0,0,None, None
-
-
-        # Define gaussian curve function
-        def fastgauss(gaussx, a,b,c):
-            return a * np.exp(-(gaussx - b) ** 2 / (2 * c ** 2))
-
-        def twogauss(gaussx, a, b, c, peaky):
-            peaky = peaky * np.clip((c - 0.7) / 2.0, 0.0, 1.0)  # No peaky at low sigma
-            a1 = 1 / (1 + peaky)
-            a2 = peaky / (1 + peaky)
-            c1 = c * 1.8
-            c2 = c / 1.4
-            wide = a1 * np.exp(-(gaussx - b) ** 2 / (2 * c1 ** 2))
-            narrow = a2 * np.exp(-(gaussx - b) ** 2 / (2 * c2 ** 2))
-            both = (wide + narrow) * a
-            return both
 
         # Initial fit guesses
         highest_data_x = np.argmax(y_values)
@@ -402,34 +389,23 @@ class FocusSet:
         mean_peak_x = filtered_x_values.mean()
 
         # Define optimisation bounds
-        bounds = ((highest_data_y * 0.95, mean_peak_x - 0.9, 0.8, -0.3),
-                  (highest_data_y * 1.15, mean_peak_x + 0.9, 50.0, 1.3))
+        # bounds = ((highest_data_y * 0.95, mean_peak_x - 0.9, 0.8, -0.3),
+        #           (highest_data_y * 1.15, mean_peak_x + 0.9, 50.0, 1.3))
         bounds = ((highest_data_y * 0.98, mean_peak_x - 0.9, 0.7,),
                   (highest_data_y * 1.15, mean_peak_x + 0.9, 50.0,))
 
-        widen = 1.0
-        totaltarget = 1.0
-        for round in range(1):  # Disable
-            offsets = np.arange(len(y_values)) - mean_peak_x  # x-index vs peak estimate
-            weights_a = np.clip(1.2 - np.abs(offsets) / 11 / widen, 0.1, 1.0) ** 2  # Weight small offsets higher
-            norm_y_values = y_values / y_values.max()  # Normalise to 1.0
-            weights_b = np.clip(norm_y_values - 0.4, 0.0001, 1.0)  # Weight higher points higher, ignore below 0.4
-            weights = weights_a * weights_b  # Merge
-            weights = weights / weights.max()  # Normalise
-            total = (weights * y_values).sum()
-            # print(weights_a)
-            # print(weights_b)
-            # print(weights)
-            log.debug("Widen {} Total {:.3f}".format(widen, total))
-            if total < totaltarget:
-                widen *= totaltarget / total
-            else:
-                break
+        offsets = np.arange(len(y_values)) - mean_peak_x  # x-index vs peak estimate
+        weights_a = np.clip(1.2 - np.abs(offsets) / 11, 0.1, 1.0) ** 2  # Weight small offsets higher
+        norm_y_values = y_values / y_values.max()  # Normalise to 1.0
+        weights_b = np.clip(norm_y_values - 0.4, 0.0001, 1.0)  # Weight higher points higher, ignore below 0.4
+        weights = weights_a * weights_b  # Merge
+        weights = weights / weights.max()  # Normalise
+
         log.debug("Fit weightings {}".format(weights))
         sigmas = 1. / weights
 
         fitted_params, _ = optimize.curve_fit(fastgauss, x_values, y_values,
-                                              bounds=bounds, sigma=sigmas, ftol=0.05, xtol=0.05,
+                                              bounds=bounds, sigma=sigmas, ftol=0.0001, xtol=0.0001,
                                               p0=(highest_data_y, mean_peak_x, 2.0,))
 
         log.debug("Gaussian fit peak is {:.3f} at {:.2f}".format(fitted_params[0], fitted_params[1]))
@@ -440,7 +416,7 @@ class FocusSet:
         gaussfit_peak_y = fitted_params[0]
 
         def curvefn(xvals):
-            return twogauss(xvals, *fitted_params)
+            return fastgauss(xvals, *fitted_params)
 
         fit_y = curvefn(x_values)
         errorweights = np.clip((y_values - y_values.max() * 0.8), 0.000001, 1.0)**1
@@ -449,24 +425,20 @@ class FocusSet:
 
         log.debug("RMS fit error (normalised 1.0): {:.3f}".format(mean_abs_error_rel))
 
+        interp_fn = interpolate.InterpolatedUnivariateSpline(x_values, y_values, k=2)
+
         if mean_abs_error_rel > 0.12:
             errorstr = "Very high fit error: {:.3f}".format(mean_abs_error_rel)
             log.warning(errorstr)
-
-            # plot = True
-            # show = True
-            # return float("NaN"), float("NaN"), float("NaN"), float("NaN"), None, None
+            raise FitError(errorstr, fittuple=(gaussfit_peak_x, gaussfit_peak_y, None, None, interp_fn, curvefn))
         elif mean_abs_error_rel > 0.06:
             errorstr = "High fit error: {:.3f}".format(mean_abs_error_rel)
             log.warning(errorstr)
-            # plot = True
-            # show = True
             if strict:
                 errorstr = "Strict mode, fit aborted".format(mean_abs_error_rel)
                 log.warning(errorstr)
-                return float("NaN"), float("NaN"), float("NaN"), float("NaN"), None, None
+                raise FitError(errorstr, fittuple=(gaussfit_peak_x, gaussfit_peak_y, None, None, interp_fn, curvefn))
 
-        interp_fn = interpolate.InterpolatedUnivariateSpline(x_values, y_values, k=2)
 
         if plot:
             # Plot original data
@@ -488,7 +460,7 @@ class FocusSet:
             if show:
                 plt.show()
 
-        return gaussfit_peak_x, gaussfit_peak_y, 0, 0, interp_fn, curvefn
+        return FocusPos(gaussfit_peak_x, gaussfit_peak_y, interp_fn, curvefn)
 
     def plot_field_curvature_strip(self, freq, show=True):
         sag = []
@@ -538,34 +510,11 @@ class FocusSet:
                 log.info("Field {} removed as duplicate".format(n+1))
         log.info("Removed {} out of {} field as duplicates".format(len(self.fields) - len(new_fields), len(self.fields)))
         self.fields = new_fields
-        return
-
-
-        tuplist = np.array(tuplist)
-        log.info(np.percentile(tuplist[tuplist[:,0] == 0], [50], axis=0))
-        log.info()
-        log.info(np.percentile(tuplist[tuplist[:,0] == 1], [50], axis=0))
-        exit()
-        log.info(tuplist[tuplist[:,1] == 1][:].mean(axis=0))
-        exit()
-        dup=0
-        print("{:.0f} {:.3f} {:.3f} {:.3f} {:.3f} {:.3f} ".format(dup, np.array(x_dif).mean(),
-                                                                  np.array(y_dif).mean(),
-                                                                  np.array(angle_dif).mean(),
-                                                                  np.array(radang_dif).mean(),
-                                                                  np.array(sfrsum).mean()))
-        dup=1
-        x_dif, y_dif, angle_dif, radang_dif, sfrsum = zip(*duplist)
-        print("{:.0f} {:.3f} {:.3f} {:.3f} {:.3f} {:.3f} ".format(dup, np.array(x_dif).mean(),
-                                                                  np.array(y_dif).mean(),
-                                                                  np.array(angle_dif).mean(),
-                                                                  np.array(radang_dif).mean(),
-                                                                  np.array(sfrsum).mean()))
 
     def plot_best_sfr_vs_freq_at_point(self, x, y, x_values=None, secondline_fn=None, show=True):
         if x_values is None:
             x_values = np.linspace(0, 0.5, 30)
-        y = [self.find_best_focus(x, y, f)[1] for f in x_values]
+        y = [self.find_best_focus(x, y, f).sharp for f in x_values]
         plt.plot(x_values, y)
         if secondline_fn:
             plt.plot(x_values, secondline_fn(x_values))
@@ -584,12 +533,12 @@ class FocusSet:
         :param show:
         :return:
         """
-        focuspos, _, _, _, _, _ = self.find_best_focus((IMAGE_WIDTH / 2), (IMAGE_HEIGHT / 2), AUC, axis=axis)
+        focuspos = self.find_best_focus((IMAGE_WIDTH / 2), (IMAGE_HEIGHT / 2), AUC, axis=axis).focuspos
 
         # Build sfr at that point
         data_sfr = []
         for f in RAW_SFR_FREQUENCIES[:32]:
-            _, _, _, _, interpfn, _ = self.find_best_focus((IMAGE_WIDTH / 2), (IMAGE_HEIGHT / 2), f, axis=axis)
+            interpfn = self.find_best_focus((IMAGE_WIDTH / 2), (IMAGE_HEIGHT / 2), f, axis=axis).interpfn
             data_sfr.append(interpfn(focuspos))
 
         data_sfr = np.array(data_sfr)
@@ -650,7 +599,7 @@ class FocusSet:
         meshes = [grid.flatten() for grid in (mesh+mesh2)]
         return list(zip(*meshes)), np.zeros((len(y_values), len(x_values))), x_values, y_values
 
-    def find_compromise_focus(self, freq=AUC, axis=MEDIAL, detail=1.0, plot_freq=None):
+    def find_compromise_focus(self, freq=AUC, axis=MEDIAL, detail=1.0, plot_freq=None, weighting_fn=EVEN_WEIGHTED):
         gridit, numpyarray, x_values, y_values = self._get_grids(detail)
         n_fields = len(self.fields)
         field_locs = np.arange(0, n_fields, 0.1)  # Analyse with 0.1 field accuracy
@@ -665,7 +614,7 @@ class FocusSet:
         # Iterate over all locations
         for n_x, n_y, x, y in gridit:
             # Get sharpness data at location
-            _, _, _, _, interpfn, _ = self.find_best_focus(x, y, freq, axis=axis)
+            interpfn = self.find_best_focus(x, y, freq, axis=axis).interpfn
 
             # Gather data at all sub-points
             pos_sharps = interpfn(field_locs)
@@ -673,10 +622,7 @@ class FocusSet:
 
             # Build weighting
             img_height = calc_image_height(x, y)
-            weight = (1.0 - img_height) ** 2
-            # weight = img_height ** 2
-            weight = 1.0
-            weights[n_y, n_x] = weight
+            weights[n_y, n_x] = weighting_fn(img_height)
 
         # Build kernal density model to de-bias mid-field due to large number of points
         height_kde = stats.gaussian_kde(heights.flatten(), bw_method=0.8)
@@ -711,36 +657,30 @@ class FocusSet:
             sharpfield = numpyarray
             for n_x, n_y, x, y in gridit:
                 # Get sharpness data at location
-                _, _, _, _, interpfn, _ = self.find_best_focus(x, y, plot_freq, axis=axis)
+                interpfn = self.find_best_focus(x, y, plot_freq, axis=axis).interpfn
                 sharpfield[n_y, n_x] = interpfn(peak_focus_pos)
         else:
             sharpfield = sharps[:, :, int(peak_focus_pos*10 + 0.5)]
 
         # Move on to plotting results
-        fig, ax = plt.subplots()
 
-        low_perf = diffraction_mtf(freq, LOW_BENCHMARK_FSTOP)
-        high_perf = diffraction_mtf(freq, HIGH_BENCHBARK_FSTOP)
+        plot = FieldPlot()
 
-        inc = np.clip((high_perf - low_perf) / 20, 0.002, 0.05)
-        contours = np.arange(int(low_perf/inc)*inc - inc, high_perf + inc, inc)
-        # contours = np.arange(0.0, 1.0, 0.005)
-        z_values = sharpfield
-        colors = []
-        linspaced = np.linspace(0.0, 1.0, len(contours))
-        for lin, line in zip(linspaced, contours):
-            colors.append(plt.cm.jet(1.0 - lin))
-            # colors.append(colorsys.hls_to_rgb(lin * 0.8, 0.4, 1.0))
+        plot.zdata = sharpfield
+        plot.xticks = x_values
+        plot.yticks = y_values
+        plot.yreverse = True
+        plot.zmin = diffraction_mtf(freq, LOW_BENCHMARK_FSTOP)
+        plot.zmax = diffraction_mtf(freq, HIGH_BENCHBARK_FSTOP)
+        plot.title = "Compromise focus flat-field"
+        plot.xlabel = "x image location"
+        plot.ylabel = "y image location"
 
-        ax.set_ylim(np.amax(y_values), np.amin(y_values))
-        CS = ax.contourf(x_values, y_values, z_values, contours, colors=colors, extend='both')
-        CS2 = ax.contour(x_values, y_values, z_values, contours, colors=('black',))
-        plt.xlabel("Image position x")
-        plt.ylabel("Image position y")
-        plt.clabel(CS2, inline=1, fontsize=10)
-        plt.title("Compromise focus sharpness")
-        plt.show()
-        exit()
+        plot.contour2d()
+
+    def plot_mtf_vs_image_height(self, detail=1.0):
+        pass
+
 
 "photos@scs.co.uk"
 "S 0065-3858491"

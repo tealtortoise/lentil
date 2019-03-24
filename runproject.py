@@ -10,7 +10,7 @@ PATHS = [
     # "/mnt/mtfm/Bernard/",
 
     # "/mnt/mtfm/56mm/f1.2/mtfm/",
-    "/mnt/mtfm/56mm/f2.8/mtfm/",
+    # "/mnt/mtfm/56mm/f2.8/mtfm/",
     # "/mnt/mtfm/56mm/f5.6/mtfm/",
     # "/mnt/mtfm/56mm/f8/mtfm/",
     # "/mnt/mtfm/56mm/f8/mtfm/",
@@ -20,7 +20,7 @@ PATHS = [
     #
     # '/mnt/mtfm/16-55mm/27mm f2.8/',
     # '/mnt/mtfm/16-55mm/27mm f4/mtfm/',
-    # '/mnt/mtfm/16-55mm/27mm f5.6/',
+    '/mnt/mtfm/16-55mm/27mm f5.6/',
     # '/mnt/mtfm/16-55mm/27mm f8/',
 
     # "/mnt/mtfm/16-55mm/55mm/f2.8/mtfm/",  # dodgy?
@@ -63,7 +63,7 @@ PATHS = [
 ]
 ax = None
 recalibrate = 0
-calibration = 1#None if recalibrate else True
+calibration = 1  # None if recalibrate else True
 # PATHS.reverse()
 for path in PATHS:
 
@@ -103,7 +103,7 @@ for path in PATHS:
     freq = AUC
     ax = None
     ax, skewplane = focusset.plot_ideal_focus_field(detail=detail, show=False, freq=freq,
-                                                    ax=ax, axis=MERIDIONAL,
+                                                    ax=ax, axis=MEDIAL,
                                                     plot_type=plot_type, plot_curvature=plot_curvature,
                                                     skewplane=skewplane, alpha=0.6, title=focusset.lens_name)
 

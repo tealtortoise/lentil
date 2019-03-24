@@ -18,10 +18,12 @@ class SFRField():
     Represents entire image field of SFRPoints for a single image
     """
 
-    def __init__(self, points=None, pathname=None, calibration=None):
+    def __init__(self, points=None, pathname=None, calibration=None, smoothing=FIELD_SMOOTHING):
         """
 
         :param points: Iterable of SFRPoints, order not important
+        :param pathname: Path to MTF Mapper edge_sfr_values.txt file to parse
+        :param calibration: calibration data array
         """
         if points is None:
             points = []
@@ -31,6 +33,8 @@ class SFRField():
                 for row in csvreader:
                     points.append(SFRPoint(row, calibration=calibration))
         self.points = points
+
+        # Set up cache for numpy point data
         np_axis = {}
         np_axis['np_x'] = None
         np_axis['np_y'] = None
@@ -38,10 +42,11 @@ class SFRField():
         np_axis['np_sfr_freq'] = None
         np_axis['np_mtf'] = None
         np_axis2 = np_axis.copy()
-        self.np_dict = {SAGITTAL: np_axis, MERIDIONAL: np_axis2}
+        self.np_dict_cache = {SAGITTAL: np_axis, MERIDIONAL: np_axis2}
 
-        self.smoothing = FIELD_SMOOTHING
-        self.boundtup = {}
+        self.smoothing = smoothing
+        self.bounds_tuple_cache = {}
+
     @property
     def saggital_points(self):
         """
@@ -78,15 +83,15 @@ class SFRField():
         Find extremeties of point locations
         :return: Tuple (x_min, y_min, x_max, y_max)
         """
-        if axis in self.boundtup:
-            return self.boundtup[axis]
+        if axis in self.bounds_tuple_cache:
+            return self.bounds_tuple_cache[axis]
         lst = self.get_subset(axis)
         x_min = min((point.x for point in lst))
         x_max = max((point.x for point in lst))
         y_min = min((point.y for point in lst))
         y_max = max((point.y for point in lst))
         tup = x_min, y_min, x_max, y_max
-        self.boundtup[axis] = tup
+        self.bounds_tuple_cache[axis] = tup
         return tup
 
     def build_axis_points(self, x_len=20, y_len=20, axis=MEDIAL):
@@ -124,8 +129,8 @@ class SFRField():
         :param freq: spacial frequency to return, -1 for mtf50
         :return: interpolated cy/px at specified frequency, or mtf50 frequency if -1 passed
         """
-        # return 0.3
-        if self.np_dict[axis]['np_x'] is None or self.np_dict[axis]['np_sfr_freq'] != freq:
+
+        if self.np_dict_cache[axis]['np_x'] is None or self.np_dict_cache[axis]['np_sfr_freq'] != freq:
             lst = []
             for point in self.get_subset(axis):
                 lst.append((point.x, point.y, point.get_freq(freq)))
@@ -133,13 +138,13 @@ class SFRField():
             x_arr = np.array(x_arr)
             y_arr = np.array(y_arr)
             z_arr = np.array(z_arr)
-            self.np_dict[axis]['np_x'] = x_arr
-            self.np_dict[axis]['np_y'] = y_arr
-            self.np_dict[axis]['np_mtf'] = z_arr
-            self.np_dict[axis]['np_sfr_freq'] = freq
-        x_arr = self.np_dict[axis]['np_x']
-        y_arr = self.np_dict[axis]['np_y']
-        z_arr = self.np_dict[axis]['np_mtf']
+            self.np_dict_cache[axis]['np_x'] = x_arr
+            self.np_dict_cache[axis]['np_y'] = y_arr
+            self.np_dict_cache[axis]['np_mtf'] = z_arr
+            self.np_dict_cache[axis]['np_sfr_freq'] = freq
+        x_arr = self.np_dict_cache[axis]['np_x']
+        y_arr = self.np_dict_cache[axis]['np_y']
+        z_arr = self.np_dict_cache[axis]['np_mtf']
 
         # Calculate distance of each edge location to input location on each axis
         x_distances = (x_arr - x)
@@ -151,9 +156,9 @@ class SFRField():
         # Calculate distance in 2d plane
         distances = np.sqrt(
             ((x_distances) / x_distance_rms) ** 2 + ((y_distances) / y_distance_rms) ** 2)
+
         # Determine weightings allowing more weight to nearby points
         exp_weights = np.exp(1 - distances) * 0.5
-        # return 0.3
 
         raised_cos_weights = np.cos(np.clip(distances / 1.4 * math.pi, 0.0, math.pi)) + 1.0
         weights = (exp_weights * 1.6 + raised_cos_weights * 0.4)
@@ -165,7 +170,6 @@ class SFRField():
         # print(is_point_nearby.sum(), len(weights))
 
         order = 2  # Spline order
-        # return 0.3
 
         # Build spline surface
         func = interpolate.SmoothBivariateSpline(x_arr[nr], y_arr[nr], z_arr[nr], bbox=bbox,
@@ -304,8 +308,8 @@ class SFRField():
         for axis in axis:
             errors, fit, orig = self.get_fit_errors(freqs, axis=axis, by_percent=by_percent)
             abs_mean = np.mean(np.abs(errors), axis=0)  # Mean of all freqs
-            x = self.np_dict[axis]['np_x']
-            y = self.np_dict[axis]['np_y']
+            x = self.np_dict_cache[axis]['np_x']
+            y = self.np_dict_cache[axis]['np_y']
             norm = (abs_mean - abs_mean.min()) / (abs_mean.max() - abs_mean.min())
 
             dimension = "%" if by_percent else ""

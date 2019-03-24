@@ -1,3 +1,4 @@
+import numpy
 import numpy as np
 import  matplotlib.pyplot as plt
 
@@ -36,6 +37,14 @@ MTF50 = -1
 AUC = -2
 ACUTANCE = -3
 
+def CENTRE_WEIGHTED(height):
+    return 1.0 - height
+
+def EDGE_WEIGHTED(height):
+    return height
+
+def EVEN_WEIGHTED(height):
+    return 1.0
 
 def diffraction_mtf(freq, fstop=8):
     if type(freq) is int and freq == AUC:
@@ -104,3 +113,19 @@ GOOD = [1., 0.98582051, 0.95216779, 0.91605742, 0.88585631, 0.86172936,
      0.03019484, 0.0281874, 0.0266599, 0.02565582, 0.02520846, 0.02533362,
      0.02601429, 0.02719823, 0.02879615, 0.03068963, 0.03274225, 0.03481336,
      0.0367723, 0.03850572, 0.03992789, 0.04098472]
+
+
+def fastgauss(gaussx, a,b,c):
+    return a * np.exp(-(gaussx - b) ** 2 / (2 * c ** 2))
+
+
+def twogauss(gaussx, a, b, c, peaky):
+    peaky = peaky * np.clip((c - 0.7) / 2.0, 0.0, 1.0)  # No peaky at low sigma
+    a1 = 1 / (1 + peaky)
+    a2 = peaky / (1 + peaky)
+    c1 = c * 1.8
+    c2 = c / 1.4
+    wide = a1 * np.exp(-(gaussx - b) ** 2 / (2 * c1 ** 2))
+    narrow = a2 * np.exp(-(gaussx - b) ** 2 / (2 * c2 ** 2))
+    both = (wide + narrow) * a
+    return both
