@@ -158,10 +158,10 @@ class SFRPoint:
 
     @property
     def auc(self):
-        return (self.raw_sfr_data * self.calibration)[:32].mean()
+        return (self.sfr)[:32].mean()
 
     def get_acutance(self, print_height=ACUTANCE_PRINT_HEIGHT, viewing_distance=ACUTANCE_VIEWING_DISTANCE):
-        return calc_acutance(self.raw_sfr_data, print_height, viewing_distance)
+        return calc_acutance(self.sfr, print_height, viewing_distance)
 
     def plot_acutance_vs_printsize(self, heightrange=(0.1, 1.0), show=True):
         height_arr = np.linspace(heightrange[0], heightrange[1], 12)

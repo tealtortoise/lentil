@@ -1,5 +1,6 @@
 import numpy
 import numpy as np
+from scipy import interpolate
 import  matplotlib.pyplot as plt
 
 SFRFILENAME = 'edge_sfr_values.txt'
@@ -16,7 +17,7 @@ SFR_HEADER = [
     'radialangle'
 ]
 
-FIELD_SMOOTHING = 0.32
+FIELD_SMOOTHING = 0.52
 
 LOW_BENCHMARK_FSTOP = 24
 HIGH_BENCHBARK_FSTOP = 3.4
@@ -24,6 +25,8 @@ HIGH_BENCHBARK_FSTOP = 3.4
 IMAGE_WIDTH = 6000
 IMAGE_HEIGHT = 4000
 IMAGE_DIAGONAL = (IMAGE_WIDTH**2 + IMAGE_HEIGHT**2)**0.5
+THETA_BOTTOM_RIGHT = np.arctan(IMAGE_HEIGHT / IMAGE_WIDTH)
+THETA_TOP_RIGHT = np.pi * 2.0 - THETA_BOTTOM_RIGHT
 
 DEFAULT_SENSOR_DIAGONAL = IMAGE_DIAGONAL * DEFAULT_PIXEL_SIZE
 
@@ -33,26 +36,54 @@ ACUTANCE_VIEWING_DISTANCE = 0.74
 CONTOUR2D = 0
 PROJECTION3D = 1
 
+DEFAULT_FREQ = -2
 MTF50 = -1
 AUC = -2
 ACUTANCE = -3
 
 def CENTRE_WEIGHTED(height):
-    return 1.0 - height
+    return (1.0 - height) ** 1
 
 def EDGE_WEIGHTED(height):
-    return height
+    return np.clip(1.1 - np.abs(0.6 - height)*1.4, 0.0001, 1.0) ** 2
+
+def CORNER_WEIGHTED(height):
+    return height ** 1
 
 def EVEN_WEIGHTED(height):
     return 1.0
 
-def diffraction_mtf(freq, fstop=8):
+def plot_weighting(weightingfn):
+    x = np.linspace(0, 1, 100)
+    plt.plot(x, weightingfn(x))
+    plt.show()
+
+# plot_weighting(EDGE_WEIGHTED)
+# exit()
+
+
+def EVEN_WEIGHTED(height):
+    return 1.0
+
+
+def diffraction_mtf(freq, fstop=8, calibration=None):
     if type(freq) is int and freq == AUC:
-        return diffraction_mtf(np.linspace(0, 0.5-1.0/32, 32), fstop).mean()
+        return diffraction_mtf(np.linspace(0, 0.5-1.0/32, 32), fstop, calibration).mean()
     if type(freq) is int and freq == ACUTANCE:
-        return calc_acutance(diffraction_mtf(RAW_SFR_FREQUENCIES, fstop))
+        # print(22, calibration)
+        return calc_acutance(diffraction_mtf(RAW_SFR_FREQUENCIES, fstop, calibration))
     mulfreq = np.clip(freq / 8.0 * fstop, 0, 1)
-    return 2.0 / np.pi * (np.arccos(mulfreq) - mulfreq * (1 - mulfreq ** 2) ** 0.5)
+    if calibration is None:
+        calibration_mul = 1.0
+    else:
+        interpfn = interpolate.InterpolatedUnivariateSpline(RAW_SFR_FREQUENCIES[:],
+                                                            np.pad(calibration, (0,32),
+                                                                   'constant',
+                                                                   constant_values=0), k=1)
+        calibration_mul = np.clip(interpfn(freq),1e-6, np.inf)
+    print(44, freq)
+    print(44, calibration_mul)
+    return 2.0 / np.pi * (np.arccos(mulfreq) - mulfreq * (1 - mulfreq ** 2) ** 0.5) * calibration_mul
 
 
 def calc_acutance(sfr, print_height=ACUTANCE_PRINT_HEIGHT, viewing_distance=ACUTANCE_VIEWING_DISTANCE):
@@ -95,7 +126,7 @@ def calc_image_height(x, y):
     :param y: y loc(s)
     :return: height(s)
     """
-    img_height = (((IMAGE_WIDTH / 2) - x) ** 2 + ((IMAGE_HEIGHT / 2) - y) ** 2) ** 0.5 / IMAGE_DIAGONAL
+    img_height = (((IMAGE_WIDTH / 2) - x) ** 2 + ((IMAGE_HEIGHT / 2) - y) ** 2) ** 0.5 / IMAGE_DIAGONAL * 2
     return img_height
 
 

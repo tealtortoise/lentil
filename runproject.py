@@ -9,19 +9,19 @@ from lentil import *
 PATHS = [
     # "/mnt/mtfm/Bernard/",
 
-    # "/mnt/mtfm/56mm/f1.2/mtfm/",
-    # "/mnt/mtfm/56mm/f2.8/mtfm/",
+    "/mnt/mtfm/56mm/f1.2/mtfm/",
+    "/mnt/mtfm/56mm/f2.8/mtfm/",
     # "/mnt/mtfm/56mm/f5.6/mtfm/",
     # "/mnt/mtfm/56mm/f8/mtfm/",
     # "/mnt/mtfm/56mm/f8/mtfm/",
 
     # '/mnt/mtfm/16-55mm/16mm f2.8/mtfm/',
-    # '/mnt/mtfm/16-55mm/16mm f5.6/',
+    '/mnt/mtfm/16-55mm/16mm f5.6/',
     #
     # '/mnt/mtfm/16-55mm/27mm f2.8/',
     # '/mnt/mtfm/16-55mm/27mm f4/mtfm/',
-    '/mnt/mtfm/16-55mm/27mm f5.6/',
-    # '/mnt/mtfm/16-55mm/27mm f8/',
+    # '/mnt/mtfm/16-55mm/27mm f5.6/',
+    '/mnt/mtfm/16-55mm/27mm f8/',
 
     # "/mnt/mtfm/16-55mm/55mm/f2.8/mtfm/",  # dodgy?
     # "/mnt/mtfm/16-55mm/55mm/f4/mtfm/",
@@ -37,13 +37,13 @@ PATHS = [
 
     # "/mnt/mtfm/55-200mm/55mm/f3.5/mtfm/",
     # "/mnt/mtfm/55-200mm/55mm/f5.6/mtfm/",
-    # "/mnt/mtfm/55-200mm/55mm/f8/mtfm/",
+    "/mnt/mtfm/55-200mm/55mm/f8/mtfm/",
     # "/mnt/mtfm/55-200mm/55mm/f11/mtfm/",
 
     # "/mnt/mtfm/60mm/f2.4/mtfm/",
     # "/mnt/mtfm/60mm/f4/mtfm/",
     # "/mnt/mtfm/60mm/f5.6/mtfm/",
-    # "/mnt/mtfm/60mm/f8/delay/mtfm/",
+    "/mnt/mtfm/60mm/f8/delay/mtfm/",
     # "/mnt/mtfm/60mm/f8/nodelay/mtfm/",
     # "/mnt/mtfm/60mm/f11/mtfm/",
 
@@ -51,14 +51,14 @@ PATHS = [
     # "/mnt/mtfm/90mm/f2.8/mtfm/",
     # "/mnt/mtfm/90mm/f4/mtfm/",
     # "/mnt/mtfm/90mm/f5.6/mtfm/",
-    # "/mnt/mtfm/90mm/f8/mtfm/",
+    "/mnt/mtfm/90mm/f8/mtfm/",
     # "/mnt/mtfm/90mm/f11/mtfm/",
     # "/mnt/mtfm/90mm/f16/mtfm/",
 
     # "/mnt/mtfm/18-55mm/55mm/f4/mtfm/",
-    # "/mnt/mtfm/18-55mm/55mm/f5.6/mtfm/"
-    # "/mnt/mtfm/18-55mm/55mm/f8/mtfm/"
-    # "/mnt/mtfm/18-55mm/55mm/f11/mtfm/"
+    # "/mnt/mtfm/18-55mm/55mm/f5.6/mtfm/",
+    # "/mnt/mtfm/18-55mm/55mm/f8/mtfm/",
+    # "/mnt/mtfm/18-55mm/55mm/f11/mtfm/",
     # '/mnt/mtfm/23mm f1.4/mtmf/'
 ]
 ax = None
@@ -68,7 +68,24 @@ calibration = 1  # None if recalibrate else True
 for path in PATHS:
 
     focusset = FocusSet(path, rescan=0, include_all=0, use_calibration=calibration)
-    # focusset.find_compromise_focus(detail=0.8, axis=MERIDIONAL, plot_freq=0.35)
+    # focusset.plot_field_curvature_strip_contour()
+    pos = focusset.find_compromise_focus(detail=0.5, axis=MEDIAL, weighting_fn=CENTRE_WEIGHTED)
+    focusset.plot_mtf_vs_image_height(pos, detail=0.7, freqs=(0.04, 0.16,0.32))
+    # focusset.plot_mtf_vs_image_height(pos, detail=0.7, freqs=(0.16,))
+    # exit()
+    # for field in focusset.fields:
+    #     field.np_dict_cache[SAGITTAL]['np_x'] = None
+    #     field.np_dict_cache[MERIDIONAL]['np_x'] = None
+    # focusset.plot_field_curvature_strip_contour(0.25, SAGITTAL)
+    # for field in focusset.fields[6:10]:
+    #     field.plot(0.25, axis=SAGITTAL)
+    # focusset.fields[8].plot(detail=2)
+    # exit()
+    # def weightfn(height):
+    #     return 1 if (height < 0.1) else 0.0001
+    #     return 1 if (0.68 < height < 0.72) else 0.0001
+    # focusset.find_compromise_focus(freq=ACUTANCE, detail=0.7, axis=MEDIAL, plot_freq=None, weighting_fn=EVEN_WEIGHTED)
+    # exit()
     # bestpoint = focusset.get_peak_sfr(plot=1, show=0)
     # print(1)
     # focusset.set_calibration_sharpen(18.8, 0.3, stack=True)
@@ -94,16 +111,16 @@ for path in PATHS:
     # focusset.find_best_focus(1800, 1800, 0.5, SAGITTAL, plot=True)
     # plt.show()
     # exit()
-    # if 0:
+if 0:
     skewplane = 0
-    detail = 0.6
+    detail = 1.2
     plot_type = CONTOUR2D
     plot_type = PROJECTION3D
     plot_curvature = 1
     freq = AUC
     ax = None
     ax, skewplane = focusset.plot_ideal_focus_field(detail=detail, show=False, freq=freq,
-                                                    ax=ax, axis=MEDIAL,
+                                                    ax=ax, axis=SAGITTAL,
                                                     plot_type=plot_type, plot_curvature=plot_curvature,
                                                     skewplane=skewplane, alpha=0.6, title=focusset.lens_name)
 

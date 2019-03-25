@@ -8,7 +8,7 @@ from scipy import optimize, interpolate, stats
 
 from lentil.sfr_point import SFRPoint
 from lentil.sfr_field import SFRField
-from lentil.plot_utils import FieldPlot
+from lentil.plot_utils import FieldPlot, Scatter2D, COLOURS
 from lentil.constants_utils import *
 
 log = getLogger(__name__)
@@ -20,6 +20,9 @@ log.addHandler(ch)
 
 
 class FocusPos:
+    """
+    Stores focus data, including position, sharpness (mtf/sfr), fit curves and bounds
+    """
     def __init__(self, focuspos=None, sharp=None, interpfn=None, curvefn=None, lowbound=None, highbound=None):
         self.focuspos = focuspos
         self.sharp = sharp
@@ -27,6 +30,8 @@ class FocusPos:
         self.curvefn = curvefn
         self.lowbound = lowbound
         self.highbound = highbound
+        self.focus_data = None
+        self.sharp_data = None
 
     @classmethod
     def get_midpoint(cls, a, b):
@@ -43,9 +48,9 @@ class FocusPos:
 
 
 class FitError(Exception):
-    def __init__(self, fit_tuple=None, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.fit_tuple = fit_tuple
+    def __init__(self, error, fitpos: FocusPos):
+        super().__init__(error)
+        self.fitpos = fitpos
 
 
 class FocusSet:
@@ -57,9 +62,11 @@ class FocusSet:
         self.fields = []
         self.lens_name = rootpath
         calibration = None
+        self.calibration = None
         try:
             if len(use_calibration) == 32:
                 calibration = use_calibration
+                self.base_calibration = calibration
                 use_calibration = True
         except TypeError:
             pass
@@ -73,6 +80,7 @@ class FocusSet:
                     reader = csv.reader(csvfile, delimiter=',', quotechar='|')
                     reader.__next__()
                     calibration = np.array([float(cell) for cell in reader.__next__()])
+                    self.base_calibration = calibration
             except FileNotFoundError:
                 pass
 
@@ -178,7 +186,7 @@ class FocusSet:
         if title is None:
             title = self.lens_name
 
-        gridit, focus_posits, x_values, y_values = self._get_grids(detail)
+        gridit, focus_posits, x_values, y_values = self.get_grids(detail)
         sharps = focus_posits.copy()
         if plot_curvature:
             colours = focus_posits.copy()
@@ -239,7 +247,7 @@ class FocusSet:
 
             plot.xticks = x_values
             plot.yticks = y_values
-            plot.set_diffraction_limits(freq)
+            plot.set_diffraction_limits(freq, graphaxis='w')
             plot.yreverse = True
             plot.xlabel = "Image position x"
             plot.ylabel = "Image position y"
@@ -248,113 +256,51 @@ class FocusSet:
             plot.zdata = focus_posits
             plot.wdata = sharps
             ax = plot.projection3d(ax)
-            """
-            if ax is None:
-                fig = plt.figure()
-            passed_ax = ax
-
-            if ax is None:
-                ax = fig.add_subplot(111, projection='3d')
-                if not plot_curvature:
-                    ax.set_zlim(0.0, 1.0)
-            ax.set_ylim(np.amax(y_values), np.amin(y_values))
-            # ax.zaxis.set_major_locator(LinearLocator(10))
-            # ax.zaxis.set_major_formatter(FormatStrFormatter('%.02f'))
-
-            x, y = np.meshgrid(x_values, y_values)
-            print(x.flatten().shape)
-            print(y.flatten().shape)
-            print(focus_posits.shape)
-
-            if plot_curvature:
-                if num_sheets > 0:
-                    sheets = []
-                    for n in range(num_sheets):
-                        sheets.append(focus_posits * (n/num_sheets) + z_values_low * (1 - (n/num_sheets)))
-
-                    for n in range(num_sheets+1):
-                        ratio = n / max(1, num_sheets)  # Avoid divide by zero
-                        sheets.append(z_values_high * (ratio) + focus_posits * (1 - (ratio)))
-
-                    sheet_nums = np.linspace(-1, 1, len(sheets))
-                else:
-                    sheets = [focus_posits]
-                    sheet_nums = [0]
-            else:
-                sheets = [sharps]
-                sheet_nums = [0]
-            for sheet_num, sheet in zip(sheet_nums, sheets):
-
-                cmap = plt.cm.jet  # Base colormap
-                my_cmap = cmap(np.arange(cmap.N))  # Read colormap colours
-                my_cmap[:, -1] = 0.52 - (sheet_num ** 2) ** 0.5 * 0.5  # Set colormap alpha
-                # print(my_cmap[1,:].shape);exit()
-                new_cmap = np.ndarray((256, 4))
-
-                #new_color = [color[0], color[1], color[2], 0.5 - (sheet_num ** 2) ** 0.5 * 0.4]
-                #new_facecolor = [color[0], color[1], color[2], 0.3 - (sheet_num ** 2) ** 0.5 * 0.24]
-
-                # print(low_perf, high_perf)
-                new_facecolor = plt.cm.jet(np.clip(1.0 - ((sharps - low_perf) / (high_perf - low_perf)), 0.0, 1.0))  # linear gradient along the t-axis
-                new_edgecolor = 'b'
-                new_facecolor[:,:,3] = alpha
-                # new_color = new_facecolor = np.repeat(col1[np.newaxis, :, :], focus_posits.shape[0], axis=0)  # expand over the theta-    axis
-                # print(col1);print(col1.shape);exit()
-                # print(focus_posits.shape)
-                # print(new_facecolor)
-                # print(new_facecolor.shape);exit()
-
-                for a in range(256):
-                    mod = 0.5 - math.cos(a / 256 * math.pi) * 0.5
-                    new_cmap[a, :] = my_cmap[int(mod * 256), :]
-
-                mycmap = ListedColormap(new_cmap)
-                if plot_curvature:
-                    norm = matplotlib.colors.Normalize(vmin=low_perf, vmax=high_perf)
-                else:
-                    norm = matplotlib.colors.Normalize(vmin=0, vmax=1)
-
-                surf = ax.plot_surface(x, y, sheet, facecolors=new_facecolor, norm=norm, edgecolors=new_edgecolor,
-                                       rstride=1, cstride=1, linewidth=1, antialiased=True)
-                ax.set_xlabel("Image position x")
-                ax.set_ylabel("Image position y")
-                ax.set_title(title)
-            if passed_ax is None:
-                pass# fig.colorbar(surf, shrink=0.5, aspect=5)
-            """
         return ax, skewplane
 
-    def plot_field_curvature_strip_contour(self, freq=0.1, axis=MERIDIONAL):
+    def plot_field_curvature_strip_contour(self, freq=DEFAULT_FREQ, axis=MERIDIONAL, theta=THETA_TOP_RIGHT, radius=1.0):
+        maxradius = IMAGE_DIAGONAL / 2 * radius
         heights = np.linspace(-1, 1, 41)
         plot_focuses = np.linspace(0, len(self.fields), 40)
         field_focus_locs = np.arange(0, len(self.fields))
         sfrs = np.ndarray((len(plot_focuses), len(heights)))
         for hn, height in enumerate(heights):
-            x = (IMAGE_WIDTH / 2) + height * (IMAGE_WIDTH / 2)
-            y = (IMAGE_HEIGHT / 2) + height * (IMAGE_HEIGHT / 2)
-            height_sfr = [field.interpolate_value(x, y, freq, axis=axis) for field in self.fields]
-            height_sfr_fn = interpolate.InterpolatedUnivariateSpline(field_focus_locs, height_sfr, k=1)
-            height_sfr_interpolated = height_sfr_fn(plot_focuses)
-            sfrs[:,hn] = height_sfr_interpolated
+            x = np.cos(theta) * height * maxradius + IMAGE_WIDTH/2
+            y = np.sin(theta) * height * maxradius + IMAGE_HEIGHT/2
+            interpfn = self.get_interpolation_fn_at_point(x, y, freq, axis=axis).interpfn
+            height_sfr_interpolated = interpfn(plot_focuses)
+            sfrs[:, hn] = height_sfr_interpolated
 
-        low_perf = 0.0
-        high_perf = diffraction_mtf(min(1.0, freq * 1), 11.0)
+        plot = FieldPlot()
+        plot.set_diffraction_limits(freq=freq)
+        plot.xticks = heights
+        plot.yticks = plot_focuses
+        plot.zdata = sfrs
+        plot.xlabel = "Image height"
+        plot.ylabel = "Focus position"
+        plot.title = "Edge SFR vs focus position for varying height from centre"
+        plot.contour2d()
 
-        fig, ax = plt.subplots()
+    def get_interpolation_fn_at_point(self, x, y, freq=DEFAULT_FREQ, axis=MEDIAL, limit=None):
+        y_values = []
+        if limit is None:
+            lowlim = 0
+            highlim = len(self.fields)
+            fields = self.fields
+        else:
+            lowlim = max(0, limit[0])
+            highlim = min(len(self.fields), limit[1])
+            fields = self.fields[lowlim: highlim]
+        for field in fields:
+            y_values.append(field.interpolate_value(x, y, freq, axis))
+        y_values = np.array(y_values)
+        x_values = np.arange(lowlim, highlim, 1)  # Arbitrary focus units
 
-        contours = np.arange(int(low_perf * 20) / 50.0 - 0.02, high_perf + 0.02, 0.02)
-        colors = []
-        linspaced = np.linspace(0.0, 1.0, len(contours))
-        for lin, line in zip(linspaced, contours):
-            colors.append(plt.cm.jet(lin))
-            # colors.append(colorsys.hls_to_rgb(lin * 0.8, 0.4, 1.0))
-
-        ax.set_ylim(np.amin(plot_focuses), np.amax(plot_focuses))
-        CS = ax.contourf(heights, plot_focuses, sfrs, contours, colors=colors)
-        CS2 = ax.contour(heights, plot_focuses, sfrs, contours, colors=('black',), linewidths=0.8)
-        plt.clabel(CS2, inline=1, fontsize=10)
-        plt.title('Simplest default with labels')
-        plt.show()
+        interp_fn = interpolate.InterpolatedUnivariateSpline(x_values, y_values, k=2)
+        pos = FocusPos(interpfn=interp_fn)
+        pos.focus_data = x_values
+        pos.sharp_data = y_values
+        return pos
 
     def find_best_focus(self, x, y, freq, axis=MEDIAL, plot=False, show=False, strict=False):
         """
@@ -375,11 +321,16 @@ class FocusSet:
             return FocusPos.get_midpoint(best_s, best_m)
 
         # Get SFR from each field
-        y_values = []
-        for field in self.fields:
-            y_values.append(field.interpolate_value(x, y, freq, axis))
-        y_values = np.array(y_values)
-        x_values = np.arange(0, len(y_values), 1)  # Arbitrary focus units
+        # y_values = []
+        # for field in self.fields:
+        #     y_values.append(field.interpolate_value(x, y, freq, axis))
+        # y_values = np.array(y_values)
+        # x_values = np.arange(0, len(y_values), 1)  # Arbitrary focus units
+
+        pos = self.get_interpolation_fn_at_point(x, y, freq, axis)
+        x_values = pos.focus_data
+        y_values = pos.sharp_data
+        interp_fn = pos.interpfn
 
         # Initial fit guesses
         highest_data_x = np.argmax(y_values)
@@ -425,19 +376,21 @@ class FocusSet:
 
         log.debug("RMS fit error (normalised 1.0): {:.3f}".format(mean_abs_error_rel))
 
-        interp_fn = interpolate.InterpolatedUnivariateSpline(x_values, y_values, k=2)
+        # interp_fn = interpolate.InterpolatedUnivariateSpline(x_values, y_values, k=2)
 
         if mean_abs_error_rel > 0.12:
             errorstr = "Very high fit error: {:.3f}".format(mean_abs_error_rel)
             log.warning(errorstr)
-            raise FitError(errorstr, fittuple=(gaussfit_peak_x, gaussfit_peak_y, None, None, interp_fn, curvefn))
+            pos = FocusPos(gaussfit_peak_x, gaussfit_peak_y, interp_fn, curvefn)
+            raise FitError(errorstr, fitpos=pos)
         elif mean_abs_error_rel > 0.06:
             errorstr = "High fit error: {:.3f}".format(mean_abs_error_rel)
             log.warning(errorstr)
             if strict:
                 errorstr = "Strict mode, fit aborted".format(mean_abs_error_rel)
                 log.warning(errorstr)
-                raise FitError(errorstr, fittuple=(gaussfit_peak_x, gaussfit_peak_y, None, None, interp_fn, curvefn))
+                pos = FocusPos(gaussfit_peak_x, gaussfit_peak_y, interp_fn, curvefn)
+                raise FitError(errorstr, fitpos=pos)
 
 
         if plot:
@@ -461,6 +414,13 @@ class FocusSet:
                 plt.show()
 
         return FocusPos(gaussfit_peak_x, gaussfit_peak_y, interp_fn, curvefn)
+
+    def interpolate_value(self, x, y, focus, freq=AUC, axis=MEDIAL):
+        limit_low = int(focus) - 1
+        limit_high = int(focus) + 2
+        point_pos = self.get_interpolation_fn_at_point(x, y, freq, axis=axis,
+                                                       limit=(limit_low, limit_high))
+        return point_pos.interpfn(focus)
 
     def plot_field_curvature_strip(self, freq, show=True):
         sag = []
@@ -591,16 +551,27 @@ class FocusSet:
     def set_calibration_sharpen(self, amount, radius, stack=False):
         for field in self.fields:
             field.set_calibration_sharpen(amount, radius, stack)
+        self.calibration = self.fields[0].calibration
 
-    def _get_grids(self, detail=0.3):
-        x_values, y_values = self.fields[0].build_axis_points(24 * detail, 16 * detail)
-        mesh = np.meshgrid(np.arange(len(x_values)), np.arange(len(y_values)))
-        mesh2 = np.meshgrid(x_values, y_values)
-        meshes = [grid.flatten() for grid in (mesh+mesh2)]
-        return list(zip(*meshes)), np.zeros((len(y_values), len(x_values))), x_values, y_values
+    def get_grids(self, *args, **kwargs):
+        return self.fields[0].get_grids(*args, **kwargs)
 
-    def find_compromise_focus(self, freq=AUC, axis=MEDIAL, detail=1.0, plot_freq=None, weighting_fn=EVEN_WEIGHTED):
-        gridit, numpyarray, x_values, y_values = self._get_grids(detail)
+    def find_compromise_focus(self, freq=AUC, axis=MEDIAL, detail=1.0, plot_freq=None, weighting_fn=EVEN_WEIGHTED,
+                              plot_type=PROJECTION3D, midfield_bias_comp=True):
+        """
+        Finds optimial compromise flat-field focus postion
+
+        :param freq: Frequency to use for optimisation
+        :param axis: SAGITTAL, MERIDIONAL or MEDIAL
+        :param detail: Change number of analysis points (default is 1.0)
+        :param plot_freq: Frequency to use for plot of result if different to optimisation frequency
+        :param weighting_fn: Pass a function which accepts an image height (0-1) and returns weight (0-1)
+        :param plot_type: CONTOUR2D or PROJECTION3D
+        :param midfield_bias_comp: Specified whether bias due to large number of mid-field points should be compensated
+        :return:
+        """
+
+        gridit, numpyarray, x_values, y_values = self.get_grids(detail)
         n_fields = len(self.fields)
         field_locs = np.arange(0, n_fields, 0.1)  # Analyse with 0.1 field accuracy
 
@@ -614,7 +585,13 @@ class FocusSet:
         # Iterate over all locations
         for n_x, n_y, x, y in gridit:
             # Get sharpness data at location
-            interpfn = self.find_best_focus(x, y, freq, axis=axis).interpfn
+            try:
+                interpfn = self.find_best_focus(x, y, freq, axis=axis).interpfn
+            except FitError as e:
+                # Keep calm and ignore crap fit errors
+                interpfn = e.fitpos.interpfn
+                # plt.plot(field_locs, interpfn(field_locs))
+                # plt.show()
 
             # Gather data at all sub-points
             pos_sharps = interpfn(field_locs)
@@ -622,41 +599,49 @@ class FocusSet:
 
             # Build weighting
             img_height = calc_image_height(x, y)
-            weights[n_y, n_x] = weighting_fn(img_height)
+            weights[n_y, n_x] = np.clip(weighting_fn(img_height), 1e-6, 1.0)
 
-        # Build kernal density model to de-bias mid-field due to large number of points
-        height_kde = stats.gaussian_kde(heights.flatten(), bw_method=0.8)
-        height_density_weight_mods = height_kde(heights.flatten()).reshape(weights.shape)
+        if midfield_bias_comp:
+            # Build kernal density model to de-bias mid-field due to large number of points
+            height_kde = stats.gaussian_kde(heights.flatten(), bw_method=0.8)
+            height_density_weight_mods = height_kde(heights.flatten()).reshape(weights.shape)
 
-        plot_kde_info = 0
-        if plot_kde_info:
-            px = np.linspace(0, 1, 30)
-            plt.plot(px, height_kde(px))
-            plt.show()
-            fig = plt.figure()
-            ax = fig.add_subplot(111, projection='3d')
-            ax.scatter(xm.flatten(), ym.flatten(), (weights / height_density_weight_mods).flatten(), c='b', marker='.')
-            plt.show()
+            plot_kde_info = 0
+            if plot_kde_info:
+                px = np.linspace(0, 1, 30)
+                plt.plot(px, height_kde(px))
+                plt.show()
+                fig = plt.figure()
+                ax = fig.add_subplot(111, projection='3d')
+                ax.scatter(xm.flatten(), ym.flatten(), (weights / height_density_weight_mods).flatten(), c='b', marker='.')
+                plt.show()
+            weights = weights / height_density_weight_mods
 
-        weights = np.repeat((weights / height_density_weight_mods)[:, :, np.newaxis], len(field_locs), axis=2)
+        weights = np.repeat(weights[:, :, np.newaxis], len(field_locs), axis=2)
         average = np.average(sharps, axis=(0, 1), weights=weights)
 
-        slice_ = average > (average.max() * 0.8)
-        poly = np.polyfit(field_locs[slice_], average[slice_], 2)
-        polyder = np.polyder(poly, 1)
-        peak_focus_pos = np.roots(polyder)[0]
+        # slice_ = average > (average.max() * 0.9)
+        # poly = np.polyfit(field_locs[slice_], average[slice_], 2)
+        # polyder = np.polyder(poly, 1)
+        # peak_focus_pos = np.roots(polyder)[0]
+        peak_focus_pos = np.argmax(average) / 10.0
         print("Found peak focus at position {:.2f}".format(peak_focus_pos))
 
-        if 1 or not 0 < peak_focus_pos < (n_fields - 1):
-            _fit = np.polyval(poly, field_locs)
+        interpfn = interpolate.InterpolatedUnivariateSpline(field_locs, average)
+
+        if not 0 < peak_focus_pos < (n_fields - 1):
+            # _fit = np.polyval(poly, field_locs)
             plt.plot(field_locs, average)
-            plt.plot(field_locs, _fit)
+            # plt.plot(field_locs, _fit)
             plt.show()
 
-        if plot_freq:
+        if plot_freq and plot_freq != freq:
+            # Plot frequency different to optimisation frequency
+
             sharpfield = numpyarray
             for n_x, n_y, x, y in gridit:
                 # Get sharpness data at location
+
                 interpfn = self.find_best_focus(x, y, plot_freq, axis=axis).interpfn
                 sharpfield[n_y, n_x] = interpfn(peak_focus_pos)
         else:
@@ -665,22 +650,52 @@ class FocusSet:
         # Move on to plotting results
 
         plot = FieldPlot()
-
         plot.zdata = sharpfield
         plot.xticks = x_values
         plot.yticks = y_values
         plot.yreverse = True
-        plot.zmin = diffraction_mtf(freq, LOW_BENCHMARK_FSTOP)
-        plot.zmax = diffraction_mtf(freq, HIGH_BENCHBARK_FSTOP)
+        print(9, self.calibration)
+        plot.zmin = diffraction_mtf(freq, LOW_BENCHMARK_FSTOP, calibration=1.0 / self.base_calibration)
+        plot.zmax = diffraction_mtf(freq, HIGH_BENCHBARK_FSTOP, calibration=1.0 / self.base_calibration)
+        plot.zmin = diffraction_mtf(freq, LOW_BENCHMARK_FSTOP, calibration=None)
+        plot.zmax = diffraction_mtf(freq, HIGH_BENCHBARK_FSTOP, calibration=None)
+        # print(55, plot.zmin)
+        # print(55, plot.zmax)
         plot.title = "Compromise focus flat-field"
         plot.xlabel = "x image location"
         plot.ylabel = "y image location"
+        # plot.plot(plot_type)
+        return FocusPos(peak_focus_pos, average[int(peak_focus_pos * 10)], interpfn)
 
-        plot.contour2d()
+    def plot_mtf_vs_image_height(self, analysis_pos, freqs=(0.05, 0.2), detail=0.5):
+        gridit, numpyarr, x_vals, y_vals = self.get_grids(detail=detail)
+        heights = numpyarr.copy()
+        arrs = []
+        for nfreq, freq in enumerate(freqs):
+            for axis in [SAGITTAL, MERIDIONAL]:
+                arr = numpyarr.copy()
+                arrs.append(arr)
+                for nx, ny, x, y in gridit:
+                    heights[ny, nx] = calc_image_height(x, y)
+                    arr[ny, nx] = self.interpolate_value(x, y, analysis_pos.focuspos, freq, axis)
 
-    def plot_mtf_vs_image_height(self, detail=1.0):
-        pass
-
+                if axis == SAGITTAL:
+                    extra_args = ['--']
+                else:
+                    extra_args = []
+                extra_kwargs = {'color': COLOURS[nfreq]}
+                plot = Scatter2D()
+                plot.xdata = heights.flatten()
+                plot.ydata = arr.flatten()
+                plot.ymin = 0
+                plot.ymax = 1.1
+                plot.xmin = 0.0
+                plot.xmax = 1.0
+                plot.xlabel = "Image Height"
+                plot.ylabel = "MTF / SFR"
+                plot.title = self.lens_name
+                plot.smoothplot(plot_used_original_data=1, extra_args=extra_args, extra_kwargs=extra_kwargs)
+        plt.show()
 
 "photos@scs.co.uk"
 "S 0065-3858491"

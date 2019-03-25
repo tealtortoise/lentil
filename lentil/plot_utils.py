@@ -11,6 +11,8 @@ class FieldPlot:
         self.zdata = None
         self.xticks = None
         self.yticks = None
+        self.xdata = None
+        self.ydata = None
         self.wdata = None  # Mystical fourth dimension
 
         self.xmin = None
@@ -22,8 +24,8 @@ class FieldPlot:
         self.wmin = None
         self.wmax = None
         self.title = "Untitled"
-        self.xlabel = "x-axis"
-        self.ylabel = "y-axis"
+        self.xlabel = "image location x"
+        self.ylabel = "image location y"
         self.zlabel = "z-axis"
 
         self.xreverse = False
@@ -143,6 +145,8 @@ class FieldPlot:
         else:
             ax.set_ylim(self._ymin, self._ymax)
 
+        ax.set_zlim(self._zmin, self._zmax)
+
         x, y = np.meshgrid(self.xticks, self.yticks)
 
         alpha = 0.6
@@ -156,16 +160,19 @@ class FieldPlot:
         my_cmap[:, -1] = alpha  # Set colormap alpha
         new_cmap = np.ndarray((256, 4))
 
-        facecolours = plt.cm.jet(np.clip(1.0 - ((self.wdata - self._wmin) / (self._wmax - self._wmin)), 0.0, 1.0))
+        if self.wdata is not None:
+            facecolours = plt.cm.jet(np.clip(1.0 - ((self.wdata - self._wmin) / (self._wmax - self._wmin)), 0.0, 1.0))
+            norm = matplotlib.colors.Normalize(vmin=self._wmin, vmax=self._wmax)
+        else:
+            facecolours = plt.cm.jet(np.clip(1.0 - ((self.zdata - self._zmin) / (self._zmax - self._zmin)), 0.0, 1.0))
+            norm = matplotlib.colors.Normalize(vmin=self._zmin, vmax=self._zmax)
+
         edgecolours = 'b'
         facecolours[:, :, 3] = alpha
 
         for a in range(256):
             mod = 0.5 - math.cos(a / 256 * math.pi) * 0.5
             new_cmap[a, :] = my_cmap[int(mod * 256), :]
-
-        # mycmap = ListedColormap(new_cmap)
-        norm = matplotlib.colors.Normalize(vmin=self._wmin, vmax=self._wmax)
 
         surf = ax.plot_surface(x, y, self.zdata, facecolors=facecolours, norm=norm, edgecolors=edgecolours,
                                rstride=1, cstride=1, linewidth=1, antialiased=True)
@@ -177,3 +184,93 @@ class FieldPlot:
             plt.show()
             return None
         return ax
+
+    def plot(self, plot_type=None, *args, **kwargs):
+        if plot_type is None or plot_type == CONTOUR2D:
+            return self.contour2d( *args, **kwargs)
+        elif plot_type == PROJECTION3D:
+            return self.projection3d(*args, **kwargs)
+
+
+class Scatter2D(FieldPlot):
+    def __init__(self):
+        super().__init__()
+
+    @property
+    def _xmin(self):
+        if self.xmin is None:
+            return np.min(self.xdata)
+        else:
+            return self.xmin
+
+    @property
+    def _ymin(self):
+        if self.ymin is None:
+            return np.min(self.ydata)
+        else:
+            return self.ymin
+
+    @property
+    def _xmax(self):
+        if self.xmax is None:
+            return np.max(self.xdata)
+        else:
+            return self.xmax
+
+    @property
+    def _ymax(self):
+        if self.ymax is None:
+            return np.max(self.ydata)
+        else:
+            return self.ymax
+
+    def smoothplot(self, span=None, span_auto_factor=4.0, extra_args=None, points_limit=10.0,
+                   extra_kwargs={}, remove_outliers_sigma=None, plot_used_original_data=False, k=1):
+        x_data = np.array(self.xdata)
+        y_data = np.array(self.ydata)
+        if extra_args is None:
+            extra_args = ['-']
+        x_plot = np.linspace(x_data.min(), x_data.max(), 100)
+        OK = np.isfinite(y_data)
+        if span is None:
+            span = (x_data.max() - x_data.min()) / span_auto_factor
+        while True:
+            y_plot = []
+            for x in x_plot:
+                weights = get_rcos_window2(x_data[OK], x, span)
+                points = weights.sum()
+                if points > points_limit:
+                    fn = interpolate.UnivariateSpline(x_data[OK], y_data[OK], weights, k=k, s=float("inf"))
+                    y_plot.append(fn(x))
+                else:
+                    y_plot.append(float("nan"))
+            if remove_outliers_sigma is None:
+                break
+            x_plot_valid = x_plot[np.isfinite(y_plot)]
+            y_plot_valid = np.array(y_plot)[np.isfinite(y_plot)]
+            smooth_interpolator = interpolate.InterpolatedUnivariateSpline(x_plot_valid, y_plot_valid, k=1)
+            diffs_squared = (smooth_interpolator(x_data) - y_data) ** 2
+            variance = diffs_squared.mean()
+            OK = diffs_squared < (variance * remove_outliers_sigma)
+            remove_outliers_sigma = None
+        if plot_used_original_data:
+            plt.plot(x_data[OK], y_data[OK], ',', **extra_kwargs)
+        plt.ylim(self._ymin, self._ymax)
+        plt.xlim(self._xmin, self._xmax)
+        plt.title(self.title)
+        plt.xlabel(self.xlabel)
+        plt.ylabel(self.ylabel)
+        plt.plot(x_plot, y_plot, *extra_args, **extra_kwargs)
+
+
+def get_rcos_window2(times, centre, half_span):
+    deltatimes = np.clip((times - centre) / half_span, -1.0, 1.0)
+    return np.cos(math.pi * deltatimes) + 1.0000001
+
+
+COLOURS = {0: 'red',
+           1: 'orange',
+           2: 'green',
+           3: 'blue',
+           4: 'purple',
+           5: 'black'}

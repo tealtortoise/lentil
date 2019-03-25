@@ -9,6 +9,7 @@ from matplotlib.colors import ListedColormap
 from scipy import interpolate
 
 from lentil.constants_utils import *
+from lentil.plot_utils import FieldPlot
 from lentil.sfr_point import SFRPoint
 
 FUNCSTORE = None
@@ -102,6 +103,13 @@ class SFRField():
         y_values = np.linspace(y_min, y_max, y_len)
         return x_values, y_values
 
+    def get_grids(self, detail=0.3):
+        x_values, y_values = self.build_axis_points(24. * detail, 16. * detail)
+        mesh = np.meshgrid(np.arange(len(x_values)), np.arange(len(y_values)))
+        mesh2 = np.meshgrid(x_values, y_values)
+        meshes = [grid.flatten() for grid in (mesh+mesh2)]
+        return list(zip(*meshes)), np.zeros((len(y_values), len(x_values))), x_values, y_values
+
     def get_simple_interpolation_fn(self, axis=MEDIAL):
         """
         Returns a simple spline interpolation callable fitted across the whole field.
@@ -177,7 +185,7 @@ class SFRField():
         output = func(x, y)  # Get (buried) interpolated value at point of interest
         return np.clip(output[0][0], 1e-5, np.inf)  # Return scalar
 
-    def plot(self, freq=0.1, axis=MEDIAL, plot_type=1, detail=1.0,
+    def plot(self, freq=DEFAULT_FREQ, axis=MEDIAL, plot_type=1, detail=1.0,
              show=True, ax=None, alpha=0.85):
         """
         Plots SFR/MTF values for chosen axis across field
@@ -187,74 +195,31 @@ class SFRField():
         :param detail: Relative detail in plot (1.0 is default)
         :return:
         """
-        x_values, y_values = self.build_axis_points(int(detail * 20), int(detail * 20))
-        z_values = np.ndarray((len(y_values), len(x_values)))
+        gridit, z_values, x_values, y_values = self.get_grids(detail=detail)
 
         # fn = self.get_simple_interpolation_fn(axis)
-        for x_idx, x in enumerate(x_values):
-            for y_idx, y in enumerate(y_values):
+        for x_idx, y_idx, x, y in gridit:
+            if axis == MEDIAL:
+                sag = self.interpolate_value(x, y, freq, SAGITTAL)
+                mer = self.interpolate_value(x, y, freq, MERIDIONAL)
+                z_values[y_idx, x_idx] = (sag + mer) / 2
+            else:
                 z_values[y_idx, x_idx] = self.interpolate_value(x, y, freq, axis)
 
         max_z = np.amax(z_values) * 1.1
-
-        if plot_type == 0:
-            fig, ax = plt.subplots()
-            colors = []
-            contours = np.arange(0.02, 0.30, 0.01)
-            linspaced = np.linspace(0.0, 1.0, len(contours))
-            for lin, line in zip(linspaced, contours):
-                colors.append(plt.cm.jet(lin))
-                # colors.append(colorsys.hls_to_rgb(lin * 0.8, 0.4, 1.0))
-
-            ax.set_ylim(np.amax(y_values), np.amin(y_values))
-            CS = ax.contourf(x_values, y_values, z_values, contours, colors=colors)
-            CS2 = ax.contour(x_values, y_values, z_values, contours, colors=('black',))
-            plt.clabel(CS2, inline=1, fontsize=10)
-            plt.title('Simplest default with labels')
-
-            # plt.figure()
-            # contours = np.arange(0.1, 0.6, 0.01)
-            # colors = []
-            # linspaced = np.linspace(0.0, max_z, len(contours))
-            # for lin, line in zip(linspaced, contours):
-            #     colors.append(colorsys.hls_to_rgb(lin * 0.8, 0.4, 1.0))
-            # CS = plt.contour(x_values, y_values, z_values, contours, colors=colors)
-            # plt.clabel(CS, inline=1, fontsize=10)
-            # plt.title('Simplest default with labels')
+        plot = FieldPlot()
+        plot.xticks = x_values
+        plot.yticks = y_values
+        plot.zdata = z_values
+        plot.yreverse = True
+        plot.set_diffraction_limits(freq=freq)
+        plot.title = "Sharpness"
+        if plot_type == CONTOUR2D:
+            return plot.contour2d(ax=ax, show=show)
+        elif plot_type == PROJECTION3D:
+            return plot.projection3d(ax=ax, show=show)
         else:
-            fig = plt.figure()
-            if ax is None:
-                ax = fig.add_subplot(111, projection='3d')
-                ax.set_zlim(0.0, max_z)
-            # ax.zaxis.set_major_locator(LinearLocator(10))
-            # ax.zaxis.set_major_formatter(FormatStrFormatter('%.02f'))
-
-            x, y = np.meshgrid(x_values, y_values)
-            print(x.flatten().shape)
-            print(y.flatten().shape)
-            print(z_values.shape)
-
-            cmap = plt.cm.winter  # Base colormap
-            my_cmap = cmap(np.arange(cmap.N))  # Read colormap colours
-            my_cmap[:, -1] = alpha  # Set colormap alpha
-            # print(my_cmap[1,:].shape);exit()
-            new_cmap = np.ndarray((256, 4))
-
-            for a in range(256):
-                mod = 0.5 - math.cos(a / 256 * math.pi) * 0.5
-                new_cmap[a, :] = my_cmap[int(mod * 256), :]
-
-            # my_col = plt.cm.jet(1.0 - z_values)
-            # my_col[:, :, -1] = 0.85
-
-            mycmap = ListedColormap(new_cmap)
-            norm = matplotlib.colors.Normalize(vmin=0, vmax=max_z)
-            surf = ax.plot_surface(x, y, z_values, cmap=mycmap, norm=norm, edgecolors='b',
-                                   rstride=1, cstride=1, linewidth=0.5, antialiased=True)
-            fig.colorbar(surf, shrink=0.5, aspect=5)
-        if show:
-            plt.show()
-        return ax
+            raise ValueError("Unknown plot type")
 
     def plot_points(self, freq=0.05, axis=MEDIAL, autoscale=False):
         fig = plt.figure()
@@ -363,3 +328,4 @@ class SFRField():
     def set_calibration_sharpen(self, amount, radius, stack=False):
         for point in self.points:
             point.set_calibration_sharpen(amount, radius, stack)
+        self.calibration = self.points[0].calibration
