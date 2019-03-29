@@ -3,7 +3,7 @@ import math
 import os
 import logging
 from logging import getLogger
-
+from operator import itemgetter
 from scipy import optimize, interpolate, stats
 
 from lentil.sfr_point import SFRPoint
@@ -19,7 +19,7 @@ ch.setLevel(logging.DEBUG)
 log.addHandler(ch)
 
 
-class FocusPos:
+class FocusOb:
     """
     Stores focus data, including position, sharpness (mtf/sfr), fit curves and bounds
     """
@@ -32,6 +32,8 @@ class FocusPos:
         self.highbound = highbound
         self.focus_data = None
         self.sharp_data = None
+        self.x_loc = None
+        self.y_loc = None
 
     @classmethod
     def get_midpoint(cls, a, b):
@@ -48,7 +50,7 @@ class FocusPos:
 
 
 class FitError(Exception):
-    def __init__(self, error, fitpos: FocusPos):
+    def __init__(self, error, fitpos: FocusOb):
         super().__init__(error)
         self.fitpos = fitpos
 
@@ -63,6 +65,7 @@ class FocusSet:
         self.lens_name = rootpath
         calibration = None
         self.calibration = None
+        self.base_calibration = np.ones((64,))
         try:
             if len(use_calibration) == 32:
                 calibration = use_calibration
@@ -115,7 +118,8 @@ class FocusSet:
                         if not sfr_file_exists:
                             continue
                         stubname = os.path.join(entry.name, SFRFILENAME)
-                    elif entry.is_file():
+                    elif entry.is_file() and entry.name.endswith("sfr"):
+                        print("Found {}".format(entry.name))
                         fullpathname = entry.path
                         stubname = entry.name
                     else:
@@ -166,8 +170,9 @@ class FocusSet:
                 csvwriter.writerow(["Relevant filenames"]+filenames)
                 print("Data saved to lentil_data.csv")
 
-    def plot_ideal_focus_field(self, freq=AUC, detail=1.0, axis=MEDIAL, plot_curvature=False,
-                               plot_type=0, show=True, ax=None, skewplane=False, alpha=0.7, title=None):
+    def plot_ideal_focus_field(self, freq=AUC, detail=1.0, axis=MEDIAL, plot_curvature=True,
+                               plot_type=PROJECTION3D, show=True, ax=None, skewplane=False,
+                               alpha=0.7, title=None):
         """
         Plots peak sharpness / curvature at each point in field across all focus
 
@@ -179,6 +184,8 @@ class FocusSet:
         :param show: Displays plot if True
         :param ax: Pass existing matplotlib axis to use
         :param skewplane: True to build and use deskew plane, or pass existing plane
+        :param alpha: plot plane transparency
+        :param title: title for plot
         :return: matplotlib axis for reuse, skewplane for reuse
         """
 
@@ -281,7 +288,7 @@ class FocusSet:
         plot.title = "Edge SFR vs focus position for varying height from centre"
         plot.contour2d()
 
-    def get_interpolation_fn_at_point(self, x, y, freq=DEFAULT_FREQ, axis=MEDIAL, limit=None):
+    def get_interpolation_fn_at_point(self, x, y, freq=DEFAULT_FREQ, axis=MEDIAL, limit=None, order=2):
         y_values = []
         if limit is None:
             lowlim = 0
@@ -291,18 +298,25 @@ class FocusSet:
             lowlim = max(0, limit[0])
             highlim = min(len(self.fields), limit[1])
             fields = self.fields[lowlim: highlim]
-        for field in fields:
-            y_values.append(field.interpolate_value(x, y, freq, axis))
+
+        if axis == MEDIAL:
+            for field in fields:
+                s = field.interpolate_value(x, y, freq, SAGITTAL)
+                m = field.interpolate_value(x, y, freq, MERIDIONAL)
+                y_values.append((m + s) * 0.5)
+        else:
+            for n, field in enumerate(fields):
+                y_values.append(field.interpolate_value(x, y, freq, axis))
         y_values = np.array(y_values)
         x_values = np.arange(lowlim, highlim, 1)  # Arbitrary focus units
 
-        interp_fn = interpolate.InterpolatedUnivariateSpline(x_values, y_values, k=2)
-        pos = FocusPos(interpfn=interp_fn)
+        interpfn = interpolate.InterpolatedUnivariateSpline(x_values, y_values, k=order)
+        pos = FocusOb(interpfn=interpfn)
         pos.focus_data = x_values
         pos.sharp_data = y_values
         return pos
 
-    def find_best_focus(self, x, y, freq, axis=MEDIAL, plot=False, show=False, strict=False):
+    def find_best_focus(self, x, y, freq=DEFAULT_FREQ, axis=MEDIAL, plot=False, show=True, strict=False):
         """
         Get peak SFR at specified location and frequency vs focus, optionally plot.
 
@@ -316,16 +330,9 @@ class FocusSet:
         """
         # Go recursive if both planes needed
         if axis == MEDIAL:
-            best_s = self.find_best_focus(x, y, freq, SAGITTAL)
-            best_m = self.find_best_focus(x, y, freq, MERIDIONAL)
-            return FocusPos.get_midpoint(best_s, best_m)
-
-        # Get SFR from each field
-        # y_values = []
-        # for field in self.fields:
-        #     y_values.append(field.interpolate_value(x, y, freq, axis))
-        # y_values = np.array(y_values)
-        # x_values = np.arange(0, len(y_values), 1)  # Arbitrary focus units
+            best_s = self.find_best_focus(x, y, freq, SAGITTAL, plot, show, strict)
+            best_m = self.find_best_focus(x, y, freq, MERIDIONAL, plot, show, strict)
+            return FocusOb.get_midpoint(best_s, best_m)
 
         pos = self.get_interpolation_fn_at_point(x, y, freq, axis)
         x_values = pos.focus_data
@@ -376,12 +383,10 @@ class FocusSet:
 
         log.debug("RMS fit error (normalised 1.0): {:.3f}".format(mean_abs_error_rel))
 
-        # interp_fn = interpolate.InterpolatedUnivariateSpline(x_values, y_values, k=2)
-
         if mean_abs_error_rel > 0.12:
             errorstr = "Very high fit error: {:.3f}".format(mean_abs_error_rel)
             log.warning(errorstr)
-            pos = FocusPos(gaussfit_peak_x, gaussfit_peak_y, interp_fn, curvefn)
+            pos = FocusOb(gaussfit_peak_x, gaussfit_peak_y, interp_fn, curvefn)
             raise FitError(errorstr, fitpos=pos)
         elif mean_abs_error_rel > 0.06:
             errorstr = "High fit error: {:.3f}".format(mean_abs_error_rel)
@@ -389,31 +394,34 @@ class FocusSet:
             if strict:
                 errorstr = "Strict mode, fit aborted".format(mean_abs_error_rel)
                 log.warning(errorstr)
-                pos = FocusPos(gaussfit_peak_x, gaussfit_peak_y, interp_fn, curvefn)
+                pos = FocusOb(gaussfit_peak_x, gaussfit_peak_y, interp_fn, curvefn)
                 raise FitError(errorstr, fitpos=pos)
-
 
         if plot:
             # Plot original data
-            plt.plot(x_values, y_values, '.', color='black')
-            plt.plot(x_values, y_values, '-', color='black')
+            plt.plot(x_values, y_values, '.', marker='s', color='forestgreen', label="Original data points", zorder=11)
+            plt.plot(x_values, y_values, '-', color='forestgreen', alpha=0.3, label="Original data line", zorder=-1)
 
             # Plot fit curve
             x_plot = np.linspace(0, x_values.max(), 100)
             y_gaussplot = curvefn(x_plot)
-            plt.plot(x_plot, y_gaussplot, color='green')
-            plt.plot(x_values, errorweights / errorweights.max() * y_values.max(), '--', color='gray')
+            plt.plot(x_plot, y_gaussplot, color='red', label="Gaussian curve fit", zorder=14)
+            # plt.plot(x_values, errorweights / errorweights.max() * y_values.max(), '--', color='gray', label="Sanity checking weighting")
 
             # Plot interpolation curve
             y_interpplot = interp_fn(x_plot)
-            plt.plot(x_plot, y_interpplot, color='orange')
+            # plt.plot(x_plot, y_interpplot, color='seagreen', label="Interpolated quadratic spline fit", zorder=3)
 
             # Plot weights
-            plt.plot(x_values, weights * gaussfit_peak_y, '--', color='magenta')
+            plt.plot(x_values, weights * gaussfit_peak_y, '--', color='royalblue', label="Curve fit weighting", zorder=1)
+            plt.xlabel("Field/image number (focus position)")
+            plt.ylabel("Spacial frequency response")
+            plt.title("SFR vs focus position")
+            plt.legend()
             if show:
                 plt.show()
 
-        return FocusPos(gaussfit_peak_x, gaussfit_peak_y, interp_fn, curvefn)
+        return FocusOb(gaussfit_peak_x, gaussfit_peak_y, interp_fn, curvefn)
 
     def interpolate_value(self, x, y, focus, freq=AUC, axis=MEDIAL):
         limit_low = int(focus) - 1
@@ -471,11 +479,12 @@ class FocusSet:
         log.info("Removed {} out of {} field as duplicates".format(len(self.fields) - len(new_fields), len(self.fields)))
         self.fields = new_fields
 
-    def plot_best_sfr_vs_freq_at_point(self, x, y, x_values=None, secondline_fn=None, show=True):
+    def plot_best_sfr_vs_freq_at_point(self, x, y, axis=MEDIAL, x_values=None, secondline_fn=None, show=True):
         if x_values is None:
-            x_values = np.linspace(0, 0.5, 30)
-        y = [self.find_best_focus(x, y, f).sharp for f in x_values]
+            x_values = RAW_SFR_FREQUENCIES[:32]
+        y = [self.find_best_focus(x, y, f, axis).sharp for f in x_values]
         plt.plot(x_values, y)
+        plt.ylim(0,1)
         if secondline_fn:
             plt.plot(x_values, secondline_fn(x_values))
         if show:
@@ -493,24 +502,101 @@ class FocusSet:
         :param show:
         :return:
         """
-        focuspos = self.find_best_focus((IMAGE_WIDTH / 2), (IMAGE_HEIGHT / 2), AUC, axis=axis).focuspos
+        if axis == BOTH_AXES:
+            best = -np.inf, "", 0,0, 0
+            for axis in [SAGITTAL, MERIDIONAL]:
+                print("Testing axis {}".format(axis))
+                ob = self.find_sharpest_location(freq, axis)
+                x = ob.x_loc
+                y = ob.y_loc
+                focuspos = ob.focuspos
+                if ob.sharp > best[0]:
+                    best = ob.sharp, axis, x, y, focuspos
+            axis = best[1]
+            focuspos = best[4]
+            x = best[2]
+            y = best[3]
+            print("Found best point {:.3f} on {} axis at ({:.0f}, {:.0f}".format(best[0], axis, x, y))
+        else:
+            ob = self.find_sharpest_location(freq, axis)
+            x = ob.x_loc
+            y = ob.y_loc
+            focuspos = ob.focuspos
 
         # Build sfr at that point
         data_sfr = []
-        for f in RAW_SFR_FREQUENCIES[:32]:
-            interpfn = self.find_best_focus((IMAGE_WIDTH / 2), (IMAGE_HEIGHT / 2), f, axis=axis).interpfn
-            data_sfr.append(interpfn(focuspos))
+        for f in RAW_SFR_FREQUENCIES[:]:
+            data_sfr.append(self.interpolate_value(x, y, focuspos, f, axis))
 
         data_sfr = np.array(data_sfr)
         print("Acutance {:.3f}".format(calc_acutance(data_sfr)))
         if plot:
-            plt.plot(RAW_SFR_FREQUENCIES[:32], data_sfr)
+            plt.plot(RAW_SFR_FREQUENCIES[:], data_sfr)
             plt.ylim(0.0, data_sfr.max())
             if show:
                 plt.show()
         return SFRPoint(rawdata=data_sfr)
 
-    def build_calibration(self, fstop, plot=True, writetofile=False):
+    def find_sharpest_raw_point(self):
+        best = -np.inf, None
+        for field in self.fields:
+            for point in field.points:
+                sharp = point.get_freq(AUC)
+                if sharp > best[0]:
+                    best = sharp, point
+        return best[1]
+
+    def find_sharpest_raw_points_avg_sfr(self, n=5, skip=5):
+        best = -np.inf, None
+        all = []
+        for field in self.fields:
+            for point in field.points:
+                sharp = point.get_freq(AUC)
+                all.append((sharp, point))
+        all.sort(reverse=True, key=itemgetter(0))
+        best = all[skip: skip + n]
+        print(best)
+        sum_ = sum([tup[1].raw_sfr_data for tup in best])
+        return sum_ / n
+
+    def find_sharpest_location(self, freq=AUC, axis=MEDIAL, detail=1.5):
+        gridit, numparr, x_values, y_values = self.get_grids(detail=detail)
+        heights = numparr.copy()
+        focusposs = numparr.copy()
+        # axes = numparr.copy()
+        searchradius = 0.20
+        lastsearchradius = 0.0
+        while searchradius < 1.0:
+            for nx, ny, x, y in gridit:
+                imgheight = calc_image_height(x, y)
+                if lastsearchradius < imgheight < searchradius:
+                    focusob = self.find_best_focus(x, y, freq, axis)
+                    numparr[ny, nx] = focusob.sharp
+                    # axes[ny, nx] = focusob.axis
+                    focusposs[ny, nx] = focusob.focuspos
+                    heights[ny, nx] = imgheight
+            maxcell = np.argmax(numparr)
+            best_x_idx = maxcell % len(x_values)
+            best_y_idx = int(maxcell / len(x_values))
+            winning_height = heights[best_y_idx, best_x_idx]
+            if winning_height < (searchradius * 0.7):
+                break
+            lastsearchradius = searchradius
+            searchradius = searchradius / 0.6
+            print("Upping search radius to {:.2f}".format(searchradius))
+
+        best_x = x_values[best_x_idx]
+        best_y = y_values[best_y_idx]
+        bestpos = focusposs[best_y_idx, best_x_idx]
+        print("Found best point {:.3f} at ({:.0f}, {:.0f}) (image height {:.2f})"
+              "".format(numparr.max(), best_x, best_y, winning_height))
+        print("   at focus position {:.2f}".format(bestpos))
+        ob = FocusOb(focuspos=bestpos, sharp=numparr.max())
+        ob.x_loc = best_x
+        ob.y_loc = best_y
+        return ob
+
+    def build_calibration(self, fstop, opt_freq=AUC, plot=True, writetofile=False):
         """
         Assume diffraction limited lens to build calibration data
 
@@ -521,23 +607,32 @@ class FocusSet:
         """
         if self.use_calibration:
             if writetofile:
-                raise AttributeError("Focusset must be loaded without existing calibration")
+                pass
+                # raise AttributeError("Focusset must be loaded without existing calibration")
             else:
                 log.warning("Existing calibration loaded (will compare calibrations)")
         # Get best AUC focus postion
 
-        f_range = RAW_SFR_FREQUENCIES[:32]
-        data_sfr = self.get_peak_sfr(freq=AUC).raw_sfr_data[:32]
+        f_range = RAW_SFR_FREQUENCIES[:]
+        # data_sfr = self.get_peak_sfr(freq=opt_freq, axis=BOTH_AXES).raw_sfr_data[:]
+        data_sfr = self.find_sharpest_raw_points_avg_sfr()
+
+        if not writetofile:
+            data_sfr *= self.base_calibration
 
         diffraction_sfr = diffraction_mtf(f_range, fstop)  # Ideal sfr
 
-        correction = diffraction_sfr / data_sfr
+        correction = np.clip(diffraction_sfr / data_sfr, 0, 50.0)
+
+        print("Calibration correction:")
+        print(correction)
 
         if writetofile:
             with open("calibration.csv", 'w') as csvfile:
                 csvwriter = csv.writer(csvfile, delimiter=',', quotechar='|')
                 csvwriter.writerow(list(f_range))
                 csvwriter.writerow(list(correction))
+                print("Calibration written!")
 
         if plot:
             plt.ylim(0, max(correction))
@@ -648,54 +743,166 @@ class FocusSet:
             sharpfield = sharps[:, :, int(peak_focus_pos*10 + 0.5)]
 
         # Move on to plotting results
+        if plot_type is not None:
+            plot = FieldPlot()
+            plot.zdata = sharpfield
+            plot.xticks = x_values
+            plot.yticks = y_values
+            plot.yreverse = True
+            print(9, self.calibration)
+            plot.zmin = diffraction_mtf(freq, LOW_BENCHMARK_FSTOP, calibration=1.0 / self.base_calibration)
+            plot.zmax = diffraction_mtf(freq, HIGH_BENCHBARK_FSTOP, calibration=1.0 / self.base_calibration)
+            plot.zmin = diffraction_mtf(freq, LOW_BENCHMARK_FSTOP, calibration=None)
+            plot.zmax = diffraction_mtf(freq, HIGH_BENCHBARK_FSTOP, calibration=None)
+            # print(55, plot.zmin)
+            # print(55, plot.zmax)
+            plot.title = "Compromise focus flat-field " + self.lens_name
+            plot.xlabel = "x image location"
+            plot.ylabel = "y image location"
+            plot.plot(plot_type)
+        return FocusOb(peak_focus_pos, average[int(peak_focus_pos * 10)], interpfn)
 
-        plot = FieldPlot()
-        plot.zdata = sharpfield
-        plot.xticks = x_values
-        plot.yticks = y_values
-        plot.yreverse = True
-        print(9, self.calibration)
-        plot.zmin = diffraction_mtf(freq, LOW_BENCHMARK_FSTOP, calibration=1.0 / self.base_calibration)
-        plot.zmax = diffraction_mtf(freq, HIGH_BENCHBARK_FSTOP, calibration=1.0 / self.base_calibration)
-        plot.zmin = diffraction_mtf(freq, LOW_BENCHMARK_FSTOP, calibration=None)
-        plot.zmax = diffraction_mtf(freq, HIGH_BENCHBARK_FSTOP, calibration=None)
-        # print(55, plot.zmin)
-        # print(55, plot.zmax)
-        plot.title = "Compromise focus flat-field"
-        plot.xlabel = "x image location"
-        plot.ylabel = "y image location"
-        # plot.plot(plot_type)
-        return FocusPos(peak_focus_pos, average[int(peak_focus_pos * 10)], interpfn)
-
-    def plot_mtf_vs_image_height(self, analysis_pos, freqs=(0.05, 0.2), detail=0.5):
+    def plot_mtf_vs_image_height(self, analysis_pos=None, freqs=(0.05, 0.2), detail=0.5, axis=MEDIAL):
         gridit, numpyarr, x_vals, y_vals = self.get_grids(detail=detail)
         heights = numpyarr.copy()
         arrs = []
+        legends = []
+        if axis == MEDIAL:
+            axis = [SAGITTAL, MERIDIONAL]
+            axis = [SAGITTAL, MERIDIONAL]
+        else:
+            axis = [axis]
         for nfreq, freq in enumerate(freqs):
-            for axis in [SAGITTAL, MERIDIONAL]:
+            for loopaxis in axis:
                 arr = numpyarr.copy()
                 arrs.append(arr)
                 for nx, ny, x, y in gridit:
                     heights[ny, nx] = calc_image_height(x, y)
-                    arr[ny, nx] = self.interpolate_value(x, y, analysis_pos.focuspos, freq, axis)
+                    if analysis_pos is None:
+                        try:
+                            arr[ny, nx] = self.find_best_focus(x, y, freq, loopaxis).sharp
+                        except FitError as e:
+                            arr[ny, nx] = e.fitpos.sharp
+                    else:
+                        arr[ny, nx] = self.interpolate_value(x, y, analysis_pos.focuspos, freq, loopaxis)
 
-                if axis == SAGITTAL:
-                    extra_args = ['--']
+                if loopaxis == SAGITTAL:
+                    lineformat = '--'
                 else:
-                    extra_args = []
-                extra_kwargs = {'color': COLOURS[nfreq]}
+                    lineformat = '-'
                 plot = Scatter2D()
                 plot.xdata = heights.flatten()
                 plot.ydata = arr.flatten()
                 plot.ymin = 0
-                plot.ymax = 1.1
+                plot.ymax = 1.0
                 plot.xmin = 0.0
                 plot.xmax = 1.0
-                plot.xlabel = "Image Height"
-                plot.ylabel = "MTF / SFR"
+                plot.xlabel = "Normalised Image Height"
+                plot.ylabel = "Modulation Transfer Function"
                 plot.title = self.lens_name
-                plot.smoothplot(plot_used_original_data=1, extra_args=extra_args, extra_kwargs=extra_kwargs)
+                plot.smoothplot(lineformat=lineformat, show=False, color=COLOURS[[0, 3, 4][nfreq]],
+                                label="{:.2f} lp/mm {}".format(freq * 250, loopaxis[0]),
+                                marker="^" if loopaxis is SAGITTAL else "s")
+                # legends.append("{:.2f} cy/px {}".format(freq, loopaxis))
+                # legends.append("{:.2f} cy/px {}".format(freq, loopaxis))
+                # legends.append(None)
+                # legends.append()
+        plt.legend()
         plt.show()
+
+    def guess_focus_shift_field(self, detail=1.0, axis=MEDIAL):
+        gridit, numarr, x_values, y_values = self.get_grids(detail=detail)
+        arrs = []
+        for freq in (0.02, 0.3):
+            arr = numarr.copy()
+            arrs.append(arr)
+            for nx, ny, x, y in gridit:
+                try:
+                    arr[ny, nx] = self.find_best_focus(x, y, freq, axis=axis).focuspos
+                except FitError as e:
+                    for a in arrs:
+                        a[ny, nx] = 0.0
+        dif = arrs[1] - arrs[0]
+        plot = FieldPlot()
+        plot.xticks = x_values
+        plot.yticks = y_values
+        plot.zdata = dif
+        plot.title = "Guessed focus shift"
+        plot.zlabel = "Relative focus shift"
+        plot.projection3d()
+
+    def plot_best_focus_vs_frequency(self, x, y, axis=MEDIAL):
+        freqs = np.logspace(-2, -0.3, 20)
+        bests = []
+        for freq in freqs:
+            try:
+                bestpos = self.find_best_focus(x, y, freq, axis=axis).focuspos
+            except FitError as e:
+                bestpos = float("NaN")
+            bests.append(bestpos)
+        plot = Scatter2D()
+        plot.xdata = freqs
+        plot.ydata = bests
+        plot.xlog = True
+        plot.smoothplot(plot_used_original_data=1)
+
+    def skip_fields_and_check_accuracy(self):
+        sharpestpoint = self.find_sharpest_raw_point()
+        x = sharpestpoint.x
+        y = sharpestpoint.y
+        fields = self.fields
+        fieldnumbers = list(range(len(fields)))
+        skips = [1, 7]
+        sharps = []
+        sharps = []
+        numpoints = []
+        count = 1
+        print("Inc  Start  Points     SFR   SFR+-  BestFocus  Bestfocus+-")
+        for skip in skips:
+            sharplst = []
+            focusposlst = []
+            counts = []
+            for start in np.arange(skip):
+                usefields = fields[start::skip]
+                # Temporarily replace self.fields #naughty
+                self.fields = usefields
+                focusob = self.find_best_focus(x, y, axis=MERIDIONAL, plot=1)
+                sharplst.append(focusob.sharp)
+                focusposlst.append(focusob.focuspos)
+                counts.append(count)
+                count += 1
+                text = ""
+                if skip == 1 and start == 0:
+                    baseline = focusob.sharp, focusob.focuspos
+                    text = "** BASELINE ***"
+                delta = focusob.sharp - baseline[0]
+                percent = delta / baseline[0] * 100
+                bestfocus = (focusob.focuspos * skip) + start
+                bestfocusdelta = bestfocus - baseline[1]
+
+                print("{:3.0f}  {:5.0f}  {:6.0f}  {:6.3f} {:7.3f} {:10.3f} {:10.3f} {}".format(skip,
+                                                                                          start,
+                                                                                          len(self.fields),
+                                                                                          focusob.sharp,
+                                                                                          delta,
+                                                                                          bestfocus,
+                                                                                          bestfocusdelta,
+                                                                                               text))
+            # plt.plot(counts, sharplst, '.', color=COLOURS[skip])
+            # plt.plot([len(usefields)] * skip, sharplst, '.', color=COLOURS[skip])
+            numpoints.append(len(usefields))
+        self.fields = fields
+        print(count)
+        plt.legend(numpoints)
+        # plt.xlabel("Testrun number")
+        plt.xlabel("Number of images in sequence")
+        plt.ylabel("Peak Spacial frequency response")
+        plt.title("Peak detection vs number of images in sequence")
+        # plt.plot([0, count], [baseline[0], baseline[0]], '--', color='gray')
+        plt.plot([3, len(fields)], [baseline[0], baseline[0]], '--', color='gray')
+        plt.ylim(baseline[0]-0.1, baseline[0]+0.1)
+        plt.show()
+
 
 "photos@scs.co.uk"
 "S 0065-3858491"

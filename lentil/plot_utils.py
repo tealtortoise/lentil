@@ -99,7 +99,7 @@ class FieldPlot:
         if ax is None:
             fig, ax = plt.subplots()
 
-        inc = np.clip((self._zmax - self._zmin) / 20, 0.002, 0.05)
+        inc = np.clip((self._zmax - self._zmin) / 40, 0.002, 0.02)
         contours = np.arange(int(self._zmin / inc) * inc - inc, self._zmax + inc, inc)
         # contours = np.arange(0.0, 1.0, 0.005)
         
@@ -131,10 +131,12 @@ class FieldPlot:
         return ax
 
     def projection3d(self, ax=None, show=True):
+        if len(self.zdata.shape) is not 2:
+            raise ValueError("zdata must be be 2d")
         if ax is None:
             fig = plt.figure()
             ax = fig.add_subplot(111, projection='3d')
-            
+
         if self.xreverse:
             ax.set_xlim(self._xmax, self._xmin)
         else:
@@ -195,41 +197,79 @@ class FieldPlot:
 class Scatter2D(FieldPlot):
     def __init__(self):
         super().__init__()
+        self.ylog = False
+        self.xlog = False
 
     @property
     def _xmin(self):
         if self.xmin is None:
-            return np.min(self.xdata)
+            return np.min(self._xdata[self.isfinite])
         else:
             return self.xmin
 
     @property
     def _ymin(self):
         if self.ymin is None:
-            return np.min(self.ydata)
+            print(self.isfinite)
+            print(self.ydata)
+            # print(self.ydata[self.isfinite])
+            return np.min(self._ydata[self.isfinite])
         else:
             return self.ymin
 
     @property
     def _xmax(self):
         if self.xmax is None:
-            return np.max(self.xdata)
+            return np.max(self._xdata[self.isfinite])
         else:
             return self.xmax
 
     @property
     def _ymax(self):
         if self.ymax is None:
-            return np.max(self.ydata)
+            return np.max(self._ydata[self.isfinite])
         else:
             return self.ymax
 
-    def smoothplot(self, span=None, span_auto_factor=4.0, extra_args=None, points_limit=10.0,
-                   extra_kwargs={}, remove_outliers_sigma=None, plot_used_original_data=False, k=1):
+    @property
+    def isfinite(self):
+        x = np.isfinite(self.xdata)
+        y = np.isfinite(self.ydata)
+        return x * y
+
+    @property
+    def _ydatanonan(self):
+        return self._ydata[self.isfinite]
+    @property
+    def _xdatanonan(self):
+        return self._xdata[self.isfinite]
+
+    @property
+    def _xdata(self):
+        return np.array(self.xdata)
+    @property
+    def _ydata(self):
+        return np.array(self.ydata)
+
+    def smoothplot(self,
+                   color=None,
+                   label=None,
+                   lineformat="-",
+                   marker=None,
+                   remove_outliers_sigma=None,
+                   k=1,
+                   span=None,
+                   span_auto_factor=4.0,
+                   points_limit=10.0,
+                   extra_args=None,
+                   extra_kwargs=None,
+                   show=True):
         x_data = np.array(self.xdata)
         y_data = np.array(self.ydata)
         if extra_args is None:
-            extra_args = ['-']
+            extra_args = []
+        if extra_kwargs is None:
+            extra_kwargs = {}
         x_plot = np.linspace(x_data.min(), x_data.max(), 100)
         OK = np.isfinite(y_data)
         if span is None:
@@ -253,14 +293,22 @@ class Scatter2D(FieldPlot):
             variance = diffs_squared.mean()
             OK = diffs_squared < (variance * remove_outliers_sigma)
             remove_outliers_sigma = None
-        if plot_used_original_data:
-            plt.plot(x_data[OK], y_data[OK], ',', **extra_kwargs)
+        if marker is not None:
+            plt.plot(x_data[OK], y_data[OK], '.', alpha=0.05, label='_nolegend_', marker=marker, color=color, **extra_kwargs)
+
+        plt.grid(True, which='both', color='black', alpha=0.14, linestyle='-', linewidth=1, zorder=-999)
         plt.ylim(self._ymin, self._ymax)
         plt.xlim(self._xmin, self._xmax)
         plt.title(self.title)
         plt.xlabel(self.xlabel)
         plt.ylabel(self.ylabel)
-        plt.plot(x_plot, y_plot, *extra_args, **extra_kwargs)
+        if self.ylog:
+            plt.yscale('log')
+        if self.xlog:
+            plt.xscale('log')
+        plt.plot(x_plot, y_plot, lineformat, *extra_args, label=label, color=color, **extra_kwargs)
+        if show:
+            plt.show()
 
 
 def get_rcos_window2(times, centre, half_span):
@@ -268,9 +316,12 @@ def get_rcos_window2(times, centre, half_span):
     return np.cos(math.pi * deltatimes) + 1.0000001
 
 
-COLOURS = {0: 'red',
-           1: 'orange',
-           2: 'green',
-           3: 'blue',
-           4: 'purple',
-           5: 'black'}
+COLOURS = ['red',
+           'orangered',
+           'darkorange',
+           'green',
+           'blue',
+           'darkviolet',
+           'deeppink',
+           'black']
+

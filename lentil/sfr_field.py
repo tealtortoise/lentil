@@ -29,6 +29,7 @@ class SFRField():
         if points is None:
             points = []
             with open(pathname, 'r') as sfrfile:
+                print(999, pathname)
                 csvreader = csv.reader(sfrfile, delimiter=' ', quotechar='|')
 
                 for row in csvreader:
@@ -162,8 +163,7 @@ class SFRField():
         y_distance_rms = np.sqrt((y_distances ** 2).mean()) * self.smoothing
 
         # Calculate distance in 2d plane
-        distances = np.sqrt(
-            ((x_distances) / x_distance_rms) ** 2 + ((y_distances) / y_distance_rms) ** 2)
+        distances = np.sqrt((x_distances / x_distance_rms) ** 2 + (y_distances / y_distance_rms) ** 2)
 
         # Determine weightings allowing more weight to nearby points
         exp_weights = np.exp(1 - distances) * 0.5

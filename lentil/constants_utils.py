@@ -8,7 +8,9 @@ SFRFILENAME = 'edge_sfr_values.txt'
 DEFAULT_PIXEL_SIZE = 4e-6
 SAGITTAL = "SAGITTAL"
 MERIDIONAL = "MERIDIONAL"
-MEDIAL = "BOTH AXES"
+MEDIAL = "MEDIAL"
+BOTH_AXES = "BOTH"
+
 SFR_HEADER = [
     'blockid',
     'edgex',
@@ -17,10 +19,12 @@ SFR_HEADER = [
     'radialangle'
 ]
 
-FIELD_SMOOTHING = 0.52
+FIELD_SMOOTHING = 0.22
 
-LOW_BENCHMARK_FSTOP = 24
-HIGH_BENCHBARK_FSTOP = 3.4
+LOW_BENCHMARK_FSTOP = 13
+HIGH_BENCHBARK_FSTOP = 3.5
+LOW_BENCHMARK_FSTOP = 32
+HIGH_BENCHBARK_FSTOP = 13
 
 IMAGE_WIDTH = 6000
 IMAGE_HEIGHT = 4000
@@ -42,7 +46,7 @@ AUC = -2
 ACUTANCE = -3
 
 def CENTRE_WEIGHTED(height):
-    return (1.0 - height) ** 1
+    return (1.0 - height) ** 2
 
 def EDGE_WEIGHTED(height):
     return np.clip(1.1 - np.abs(0.6 - height)*1.4, 0.0001, 1.0) ** 2
@@ -77,12 +81,10 @@ def diffraction_mtf(freq, fstop=8, calibration=None):
         calibration_mul = 1.0
     else:
         interpfn = interpolate.InterpolatedUnivariateSpline(RAW_SFR_FREQUENCIES[:],
-                                                            np.pad(calibration, (0,32),
+                                                            np.pad(calibration, (0,64-len(calibration)),
                                                                    'constant',
                                                                    constant_values=0), k=1)
-        calibration_mul = np.clip(interpfn(freq),1e-6, np.inf)
-    print(44, freq)
-    print(44, calibration_mul)
+        calibration_mul = np.clip(interpfn(freq), 1e-6, np.inf)
     return 2.0 / np.pi * (np.arccos(mulfreq) - mulfreq * (1 - mulfreq ** 2) ** 0.5) * calibration_mul
 
 
