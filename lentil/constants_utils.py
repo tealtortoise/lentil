@@ -1,3 +1,4 @@
+import csv
 import numpy
 import numpy as np
 from scipy import interpolate
@@ -19,12 +20,14 @@ SFR_HEADER = [
     'radialangle'
 ]
 
-FIELD_SMOOTHING = 0.22
+FIELD_SMOOTHING_MIN_POINTS = 40
+FIELD_SMOOTHING_MAX_RATIO = 0.3
+FIELD_SMOOTHING_ORDER = 3
 
-LOW_BENCHMARK_FSTOP = 13
-HIGH_BENCHBARK_FSTOP = 3.5
-LOW_BENCHMARK_FSTOP = 32
-HIGH_BENCHBARK_FSTOP = 13
+LOW_BENCHMARK_FSTOP = 23
+HIGH_BENCHBARK_FSTOP = 8
+# LOW_BENCHMARK_FSTOP = 32
+# HIGH_BENCHBARK_FSTOP = 13
 
 IMAGE_WIDTH = 6000
 IMAGE_HEIGHT = 4000
@@ -162,3 +165,51 @@ def twogauss(gaussx, a, b, c, peaky):
     narrow = a2 * np.exp(-(gaussx - b) ** 2 / (2 * c2 ** 2))
     both = (wide + narrow) * a
     return both
+
+
+class EXIF:
+    def __init__(self, sfr_pathname=None, exif_pathname=None):
+        self.exif = {}
+        value = ""
+        self.aperture = 1.0
+        self.focal_length = value
+        self.lens_model = value
+        self.max_aperture = value
+        self.distortionexif = value
+        self.ca_exif = value
+
+        if exif_pathname is None:
+            split = sfr_pathname.split(".")
+            exif_pathname = ".".join(split[:2]) + ".exif.csv"
+            print(exif_pathname)
+        try:
+            with open(exif_pathname, 'r') as file:
+                reader = csv.reader(file, delimiter=',', quotechar='|')
+                for row in reader:
+                    if row[0] in self.exif:
+                        self.exif[row[0]+"_dup"] = row[1]
+                    else:
+                        self.exif[row[0]] = row[1]
+
+                    tag, value = row[:2]
+                    # print(tag, value)
+                    if tag == "Aperture":
+                        self.aperture = float(value[:])
+                    elif tag == "Focal Length" and "equivalent" not in value:
+                        self.focal_length = value
+                    elif tag == "Lens Model":
+                        self.lens_model = value
+                    elif tag == "Max Aperture Value":
+                        self.max_aperture = value
+                    elif tag == "Geometric Distortion Params":
+                        self.distortionexif = value
+                    elif tag == "Chromatic Aberration Params":
+                        self.ca_exif = value
+        except FileNotFoundError:
+            print("No EXIF found")
+
+    @property
+    def summary(self):
+        if len(self.exif) is 0:
+            return "No EXIF available"
+        return "{} at {}, f/{}".format(self.lens_model, self.focal_length, self.aperture)

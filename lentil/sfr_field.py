@@ -14,12 +14,15 @@ from lentil.sfr_point import SFRPoint
 
 FUNCSTORE = None
 
+class NotEnoughPointsException(Exception):
+    pass
+
 class SFRField():
     """
     Represents entire image field of SFRPoints for a single image
     """
 
-    def __init__(self, points=None, pathname=None, calibration=None, smoothing=FIELD_SMOOTHING):
+    def __init__(self, points=None, pathname=None, calibration=None, smoothing=0, exif=None):
         """
 
         :param points: Iterable of SFRPoints, order not important
@@ -33,8 +36,26 @@ class SFRField():
                 csvreader = csv.reader(sfrfile, delimiter=' ', quotechar='|')
 
                 for row in csvreader:
-                    points.append(SFRPoint(row, calibration=calibration))
+                    try:
+                        points.append(SFRPoint(row, calibration=calibration))
+                    except ValueError:
+                        pass
+            if exif is not None:
+                self.exif = exif
+            else:
+                self.read_exif(pathname)
         self.points = points
+
+        enough_m = len(self.get_subset(MERIDIONAL)) > 20
+        enough_s = len(self.get_subset(SAGITTAL)) > 20
+
+        if enough_m and not enough_s:
+            raise NotEnoughPointsException("Only {:.0f} sagittal points!".format(len(self.get_subset(SAGITTAL))))
+        if enough_s and not enough_m:
+            raise NotEnoughPointsException("Only {:.0f} meridional points!".format(len(self.get_subset(MERIDIONAL))))
+        if not enough_s and not enough_m:
+            raise NotEnoughPointsException("Only {:.0f} points!"
+                                           .format(len(self.get_subset(MERIDIONAL)) + len(self.get_subset(SAGITTAL))))
 
         # Set up cache for numpy point data
         np_axis = {}
@@ -143,6 +164,9 @@ class SFRField():
             lst = []
             for point in self.get_subset(axis):
                 lst.append((point.x, point.y, point.get_freq(freq)))
+            if len(lst) is 0:
+                for p in self.points:
+                    print(p.radialangle)
             x_arr, y_arr, z_arr = zip(*lst)
             x_arr = np.array(x_arr)
             y_arr = np.array(y_arr)
@@ -158,32 +182,88 @@ class SFRField():
         # Calculate distance of each edge location to input location on each axis
         x_distances = (x_arr - x)
         y_distances = (y_arr - y)
+
+
+
         # Determine scatter of these points
-        x_distance_rms = np.sqrt((x_distances ** 2).mean()) * self.smoothing
-        y_distance_rms = np.sqrt((y_distances ** 2).mean()) * self.smoothing
+        # x_distance_rms = np.sqrt((x_distances ** 2).mean())# * self.smoothing
+        # y_distance_rms = np.sqrt((y_distances ** 2).mean())# * self.smoothing
 
         # Calculate distance in 2d plane
-        distances = np.sqrt((x_distances / x_distance_rms) ** 2 + (y_distances / y_distance_rms) ** 2)
+        # distances = np.sqrt((x_distances / x_distance_rms) ** 2 + (y_distances / y_distance_rms) ** 2)
+        distances = np.sqrt((x_distances) ** 2 + (y_distances) ** 2)
 
-        # Determine weightings allowing more weight to nearby points
-        exp_weights = np.exp(1 - distances) * 0.5
+        # stack = np.stack((x_arr, y_arr, z_arr, x_distances, y_distances, distances, angles*180/np.pi), axis=0)
+        stack = np.vstack((x_arr, y_arr, z_arr, x_distances, y_distances, distances))
 
-        raised_cos_weights = np.cos(np.clip(distances / 1.4 * math.pi, 0.0, math.pi)) + 1.0
-        weights = (exp_weights * 1.6 + raised_cos_weights * 0.4)
 
-        x_min, y_min, x_max, y_max = self.get_point_range(axis)
-        bbox = [x_min, x_max, y_min, y_max]
+        bbox = [0, IMAGE_WIDTH, 0, IMAGE_HEIGHT]
 
-        nr = weights > (weights.max() * 0.1)  # Is point nearby?
+        # nr = weights > (weights.max() * 1.1)  # Is point nearby?
         # print(is_point_nearby.sum(), len(weights))
 
-        order = 2  # Spline order
+        order = FIELD_SMOOTHING_ORDER  # Spline order
 
-        # Build spline surface
-        func = interpolate.SmoothBivariateSpline(x_arr[nr], y_arr[nr], z_arr[nr], bbox=bbox,
-                                             w=weights[nr], kx=order, ky=order, s=float("inf"))
-        output = func(x, y)  # Get (buried) interpolated value at point of interest
-        return np.clip(output[0][0], 1e-5, np.inf)  # Return scalar
+        points_wanted = min(FIELD_SMOOTHING_MIN_POINTS, len(x_arr) - 1)
+        max_ratio = FIELD_SMOOTHING_MAX_RATIO
+
+        sortidx = distances.argsort()[:points_wanted*2]
+
+        sortedstack = stack[:, sortidx]
+
+        sorteddist = sortedstack[5]
+        min_ratio_radius = sorteddist[4] / max_ratio
+        min_point_radius = sorteddist[points_wanted]
+
+        radius = max(min_point_radius, min_ratio_radius)
+
+        nr = sorteddist < radius
+
+        clippedstack = sortedstack[:, nr]
+        angles = np.arctan2(clippedstack[3, :], clippedstack[4, :])
+
+        prop_of_radius = (clippedstack[5] - clippedstack[5, 0]) / (radius - clippedstack[5, 0])
+        # print(prop_of_radius)
+        weights = np.cos(np.clip(prop_of_radius, 1e-6, 1.0)**0.5 * np.pi) + 1.0
+
+        func = interpolate.SmoothBivariateSpline(clippedstack[0], clippedstack[1], clippedstack[2], bbox=bbox,
+                                                 w=weights, kx=order, ky=order, s=float("inf"))
+        radius_range = min_point_radius / min_ratio_radius
+        angle_std = np.std(angles)
+        # print("angle std {}".format(angle_std))
+        low = 40
+        high = 120
+        # print(stack.shape,sortedstack.shape, clippedstack.shape, min_ratio_radius, min_point_radius)
+        # print(nr)
+        if radius_range < high:
+            func_linear = interpolate.SmoothBivariateSpline(clippedstack[0], clippedstack[1], clippedstack[2],
+                                                            bbox=bbox, w=weights, kx=1, ky=1, s=float("inf"))
+            low_order_ratio = 1.0 - np.clip((angle_std - low) / (high - low), 0.0, 1.0)
+            # print("Low", low_order_ratio)
+            output = func_linear(x, y)[0][0] * low_order_ratio + func(x, y)[0][0] * (1.0 - low_order_ratio)
+        else:
+            output = func(x, y)[0][0]
+            low_order_ratio = 0.0
+
+        if 0:
+            print(sorteddist[0], min_point_radius, min_ratio_radius, nr.sum())
+        if 0:
+            # print(distances)
+            # print(sorteddist)
+            # print(nr)
+            colours = np.array([z_arr, z_arr, z_arr, z_arr]).T
+
+            fig = plt.figure()
+            ax = fig.add_subplot(111, projection='3d')
+            c = plt.cm.jet(z_arr[nr] / z_arr[nr].max())
+            ax.scatter(x_arr[nr], y_arr[nr], weights, c=c, marker='.')
+            # c = plt.cm.jet(weights[nr] / weights[nr].max())
+            # ax.scatter(x_arr[nr], y_arr[nr], z_arr[nr], c=c, marker='.')
+            ax.set_xlabel("x")
+            ax.set_ylabel("y")
+            plt.show()
+
+        return np.clip(output, 1e-5, np.inf)
 
     def plot(self, freq=DEFAULT_FREQ, axis=MEDIAL, plot_type=1, detail=1.0,
              show=True, ax=None, alpha=0.85):
@@ -205,6 +285,7 @@ class SFRField():
                 z_values[y_idx, x_idx] = (sag + mer) / 2
             else:
                 z_values[y_idx, x_idx] = self.interpolate_value(x, y, freq, axis)
+                # print(x, y, z_values[y_idx, x_idx])
 
         max_z = np.amax(z_values) * 1.1
         plot = FieldPlot()
@@ -212,7 +293,7 @@ class SFRField():
         plot.yticks = y_values
         plot.zdata = z_values
         plot.yreverse = True
-        plot.set_diffraction_limits(freq=freq)
+        # plot.set_diffraction_limits(freq=freq)
         plot.title = "Sharpness"
         if plot_type == CONTOUR2D:
             return plot.contour2d(ax=ax, show=show)
@@ -221,7 +302,7 @@ class SFRField():
         else:
             raise ValueError("Unknown plot type")
 
-    def plot_points(self, freq=0.05, axis=MEDIAL, autoscale=False):
+    def plot_points(self, freq=0.05, axis=MEDIAL, autoscale=False, add_corners=False):
         fig = plt.figure()
         ax = fig.add_subplot(111, projection='3d')
         if not autoscale:
@@ -240,7 +321,26 @@ class SFRField():
             y_arr = np.array(y_arr)
             z_arr = np.array(z_arr)
             colours = np.array([z_arr, z_arr, z_arr, z_arr]).T
-            ax.scatter(x_arr, y_arr, z_arr, c='r' if axis is SAGITTAL else 'b', marker='.')
+            ax.scatter(x_arr, y_arr, z_arr, c='r' if axis_ is SAGITTAL else 'b', marker='.')
+
+        if add_corners:
+            for axis_ in axis:
+                for corners in [1.0, -1.0]:
+                    x_arr = []
+                    y_arr = []
+                    z_arr = []
+                    for h in np.linspace(0, 1, 180):
+                        h = h ** 0.5
+                        x = IMAGE_WIDTH * h
+                        y = IMAGE_HEIGHT / 2.0 + IMAGE_HEIGHT * (h-0.5) * corners
+                        z = self.interpolate_value(x, y, freq, axis_)
+                        x_arr.append(x)
+                        y_arr.append(y)
+                        z_arr.append(z)
+                    ax.plot(x_arr, y_arr, z_arr, '-',
+                            color='r' if axis_ is SAGITTAL else 'b',
+                            alpha=0.5)
+
         plt.show()
 
     def get_fit_errors(self, freqs=[0.1], by_percent=False, axis=MEDIAL):
@@ -284,6 +384,7 @@ class SFRField():
                 print("=== MERIDIONAL === ")
             self._print_error_stats(abs_mean, orig, dimension)
 
+
             plt.scatter(x, y, c=abs_mean, cmap=plt.cm.jet)
             plt.colorbar()
             plt.title('Absolute fit errors ({}cy/px, {})'.format(str(freqs), axis))
@@ -323,7 +424,6 @@ class SFRField():
             print("")
             print("  RMS Error / RMS Original in %    {:.1f} ".format(error_rms / origrms *100))
             print()
-
 
     def set_calibration_sharpen(self, amount, radius, stack=False):
         for point in self.points:

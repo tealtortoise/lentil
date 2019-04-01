@@ -32,6 +32,8 @@ class FieldPlot:
         self.yreverse = False
 
         self.contours = None
+
+        self.hlines = None
     
     @property
     def _xmin(self):
@@ -99,7 +101,7 @@ class FieldPlot:
         if ax is None:
             fig, ax = plt.subplots()
 
-        inc = np.clip((self._zmax - self._zmin) / 40, 0.002, 0.02)
+        inc = np.clip((self._zmax - self._zmin) / 20, 0.002, 0.05)
         contours = np.arange(int(self._zmin / inc) * inc - inc, self._zmax + inc, inc)
         # contours = np.arange(0.0, 1.0, 0.005)
         
@@ -302,11 +304,15 @@ class Scatter2D(FieldPlot):
         plt.title(self.title)
         plt.xlabel(self.xlabel)
         plt.ylabel(self.ylabel)
+        if self.hlines is not None:
+            for line in self.hlines:
+                plt.hlines(line, 0.0, 1.0, linestyles='dotted',colors='gray')
         if self.ylog:
             plt.yscale('log')
         if self.xlog:
             plt.xscale('log')
         plt.plot(x_plot, y_plot, lineformat, *extra_args, label=label, color=color, **extra_kwargs)
+        plt.legend()
         if show:
             plt.show()
 

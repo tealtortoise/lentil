@@ -35,6 +35,8 @@ class SFRPoint:
                 self.radialangle = 0
         else:
             raise ValueError("No data!")
+        if self.raw_sfr_data.sum() == 0.0:
+            raise ValueError("MTF data is all zero!")
         self.pixelsize = pixelsize or lentil.constants_utils.DEFAULT_PIXEL_SIZE
         self._interpolate_fn = None
         self._mtf50 = None

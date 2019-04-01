@@ -26,8 +26,8 @@ PATHS = [
     # '/mnt/mtfm/16mm/f4/mtfm3/',
     # '/mnt/mtfm/16mm/f4/mtfm4/',
     # '/mnt/mtfm/16mm/f5.6/mtfm/',
-    '/mnt/mtfm/16mm/f5.6/mtfm3/',
-    '/mnt/mtfm/16mm/f5.6/mtfm4/',
+    # '/mnt/mtfm/16mm/f5.6/mtfm3/',
+    # '/mnt/mtfm/16mm/f5.6/mtfm4/',
     # '/mnt/mtfm/16mm/f8/mtfm/',
     # '/mnt/mtfm/16mm/f11/mtfm/',
 
@@ -41,6 +41,9 @@ PATHS = [
     # '/mnt/mtfm/16-55mm/16mm/f5.6/mtfm4/',
     # '/mnt/mtfm/16-55mm/16mm/f5.6/mtfm_distortion/',
     # '/mnt/mtfm/16-55mm/16mm/f8/mtfm/',
+    # '/mnt/mtfm/16-55mm/16mm/f8/mtfm3/',
+    # '/mnt/mtfm/16-55mm/16mm/f8/mtfm4/',
+    # '/mnt/mtfm/16-55mm/16mm/f8/mtfm5/',
     # '/mnt/mtfm/16-55mm/16mm/f11/mtfm/',
 
     # '/mnt/mtfm/16-55mm/18mm/f2.8/mtfm/',
@@ -55,8 +58,11 @@ PATHS = [
     # '/mnt/mtfm/16-55mm/27mm/f5.6/mtfm/',
     # '/mnt/mtfm/16-55mm/27mm/f8/mtfm/',
 
-    # "/mnt/mtfm/16-55mm/55mm/f2.8/mtfm/",  # dodgy?
+    "/mnt/mtfm/16-55mm/55mm/f2.8/mtfm/",  # dodgy?
     # "/mnt/mtfm/16-55mm/55mm/f4/mtfm/",
+    # "/mnt/mtfm/16-55mm/55mm/f4/mtfm3/",
+    # "/mnt/mtfm/16-55mm/55mm/f4/mtfm4/",
+    # "/mnt/mtfm/16-55mm/55mm/f4/mtfm5/",
     # "/mnt/mtfm/16-55mm/55mm/f5.6/mtfm/",
     # "/mnt/mtfm/16-55mm/55mm/f8/mtfm/",
     # "/mnt/mtfm/16-55mm/55mm/f11/mtfm/",
@@ -74,7 +80,9 @@ PATHS = [
 
     # "/mnt/mtfm/60mm/f2.4/mtfm/",
     # "/mnt/mtfm/60mm/f4/mtfm/",
-    # "/mnt/mtfm/60mm/f4/mtfm_distortion/",
+    # "/mnt/mtfm/60mm/f4/mtfm3",
+    # "/mnt/mtfm/60mm/f4/mtfm4",
+    # "/mnt/mtfm/60mm/f4/mtfm5",
     # "/mnt/mtfm/60mm/f5.6/mtfm/",
     # "/mnt/mtfm/60mm/f8/delay/mtfm/",
     # "/mnt/mtfm/60mm/f8/nodelay/mtfm/",
@@ -101,22 +109,43 @@ recalibrate = 0
 calibration = 1  # None if recalibrate else True
 names = []
 # PATHS.reverse()
-# focusset = FocusSet(PATHS[0], include_all=1)
-# focusset.find_compromise_focus()
-field = SFRField(pathname=os.path.join(PATHS[0], "DSCF0005.RAF.sfr"), calibration=None)
-field.plot(freq=0.35, plot_type=CONTOUR2D)
-field = SFRField(pathname=os.path.join(PATHS[1], "DSCF0005.RAF.corr.sfr"), calibration=None)
-field.plot(freq=0.35, plot_type=CONTOUR2D)
-
-exit()
-for n, path in enumerate(PATHS):
-    focusset = FocusSet(path, include_all=1, use_calibration=0)
-    focusset.plot_best_sfr_vs_freq_at_point(3000, 2000, axis=MERIDIONAL)
-    # focusset.fields[5].points[100].plot()
-    # focusset.skip_fields_and_check_accuracy()
-    # pos = focusset.find_compromise_focus(plot_type=None, detail=1, weighting_fn=EVEN_WEIGHTED)
-    # focusset.plot_mtf_vs_image_height(freqs=np.array((10, 30, 50))*1.5 / 250, analysis_pos=pos, detail=1)
+# focusset = FocusSet(PATHS[0], include_all=1, use_calibration=1, rescan=0)
+# focusset.fields[7].plot_points(0.45, MERIDIONAL)
+# focusset.build_calibration(8, writetofile=False)
+# exit()
+# focusset.find_compromise_focus(axis=MERIDIONAL);exit()
+# field = SFRField(pathname=os.path.join(PATHS[0], "mtfmappertemp_426", SFRFILENAME), calibration=focusset.base_calibration)
+# field.plot(freq=0.35, plot_type=CONTOUR2D)
+# field = SFRField(pathname=os.path.join(PATHS[1], "DSCF0004.RAF.no_corr.sfr"), calibration=focusset.base_calibration)
+# field.plot(freq=0.35, plot_type=CONTOUR2D)
+# field = SFRField(pathname=os.path.join(PATHS[2], "DSCF0004.RAF.ca_only.sfr"), calibration=focusset.base_calibration)
+# field.plot(freq=0.35, plot_type=CONTOUR2D)
+# field = SFRField(pathname=os.path.join(PATHS[3], "DSCF0004.RAF.ca_and_distortion.sfr"), calibration=focusset.base_calibration)
+# field.plot(freq=0.35, plot_type=CONTOUR2D)
+#
+# exit()
+for n, path in enumerate(PATHS[:]):
+    focusset = FocusSet(path, include_all=1, use_calibration=1)
+    for field in focusset.fields[0:1]:
+        field.plot_points(freq=0.2, add_corners=True, axis=SAGITTAL, autoscale=1)
+        continue
+        for h in np.linspace(0,3000,10):
+            pass
+            # print(field.interpolate_value(h, h*2/3, freq=45/250, axis=MERIDIONAL))
+        # exit()
+        # print(field.interpolate_value(2000,2000, freq=45/250, axis=SAGITTAL))
+        # print(field.interpolate_value(495.70328917391305, 1101.0718317333333, freq=45/250, axis=SAGITTAL))
+        # field.plot_points(freq=45/250, axis=SAGITTAL)
+        # field.plot(freq=45/250, axis=SAGITTAL, detail=2.0)
+        # exit()
+    # focusset.find_best_focus(0, 0, plot=True, axis=SAGITTAL)
+    # focusset.find_best_focus(5880.229011, 64.119336, freq=75/250, axis=MERIDIONAL, plot=True); exit()
+    # pos = FocusOb(11.0)
     # exit()
+    pos = focusset.find_compromise_focus(detail=0.5, plot_type=None)
+    focusset.plot_mtf_vs_image_height(freqs=np.array((10, 30, 50,))*1.5 / 250, analysis_pos=pos, detail=0.5,
+                                      show=True, show_diffraction=focusset.exif.aperture)
+    exit()
     # focusset.find_best_focus(200, 200, freq=0.3, axis=SAGITTAL, plot=1)
     # focusset.build_calibration(4, writetofile=recalibrate, opt_freq=AUC)
     # exit()
@@ -130,6 +159,7 @@ for n, path in enumerate(PATHS):
     # plt.plot(RAW_SFR_FREQUENCIES[:32], data_sfr2[:32], color='black')
     # names.append("f/4 diffraction limit")
     # plt.plot(RAW_SFR_FREQUENCIES[:32], data_sfr3[:32], '--', color='orange')
+plt.show()
 # plt.ylim(0, 1)
 # plt.xlim(0, 0.5)
 # plt.xlabel("Frequency (cy/px)")

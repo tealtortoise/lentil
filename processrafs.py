@@ -7,24 +7,93 @@ import csv
 import numpy as np
 import matplotlib.pyplot as plt
 
-def distortioncalc(exifstring):
-    # EXAMPLE = "400.5555556 0.3535211268 0.5 0.6126760563 0.7070422535 0.7908450704 0.8661971831 0.9352112676 1 1.06056338 -1.172515869 -2.354660034 -3.458114624 -4.434677124 -5.274719238 -5.918792725 -6.328369141 -6.426345825 -6.42634582"
 
+
+IMAGE_WIDTH = 6000
+IMAGE_HEIGHT = 4000
+IMAGE_DIAGONAL = (IMAGE_WIDTH**2 + IMAGE_HEIGHT**2)**0.5
+
+CORRECT_DISTORTION = True
+
+def check_if_distortion_corrections_needed(exifstring):
     split = exifstring.split(' ')[1:]
-    heights = np.array([float(txt) for txt in split[:9]]) * (3**2+2**2)**0.5 / 2.0
-    errors = np.array([float(txt) for txt in split[9:]])
-    multipliers = np.array(errors) * 0.01 + 1.0
-    poly = np.polyfit(heights, multipliers, 3)
-    cosum = sum(poly)
-    scaledpoly = poly / cosum
-    lst = [str(_) for _ in list(scaledpoly)[:3]]
-    geostring = " ".join(lst)
-    print(geostring)
+    com_errors = np.array([float(txt) for txt in split[9:17]])
+    return sum(np.abs(com_errors)) > 0.1
+
+
+def distortioncalc(exifstring, castring):
+    # GEOEXAMPLE = "400.5555556 0.3535211268 0.5 0.6126760563 0.7070422535 0.7908450704 0.8661971831 0.9352112676 1 1.06056338 -1.172515869 -2.354660034 -3.458114624 -4.434677124 -5.274719238 -5.918792725 -6.328369141 -6.426345825 -6.42634582"
+    # CAEXAMPLE = "400.5555556 0.3535211268 0.5 0.6126760563 0.7070422535 0.7908450704 0.8661971831 0.9352112676 1 1.06056338 -3.051757812e-05 -9.155273438e-05 -0.0001525878906 -0.0002136230469 -0.0002746582031 -0.0003356933594 -0.0004577636719 -0.0006103515625 -0.0006103515625 0.0007019042969 0.0007934570312 0.0008850097656 0.0009460449219 0.001037597656 0.001129150391 0.001220703125 0.001434326172 0.001434326172 400.5555556"
+
+    # exifstring = GEOEXAMPLE
+    # castring = CAEXAMPLE
+    max_height = (3**2+2**2)**0.5 / 2.0
+    usepoints = 8
+    split = castring.split(' ')[1:]
+    rb_heights = np.array([float(txt) for txt in split[:usepoints]]) * (3**2+2**2)**0.5 / 2.0
+    red_errors = np.array([float(txt) for txt in split[9:9+usepoints]]) #* -1
+    blue_errors = np.array([float(txt) for txt in split[18:18+usepoints]]) #* - 1
+
+    if exifstring is None:
+        com_heights = rb_heights
+        com_errors = np.zeros(com_heights.shape)
+    else:
+        split = exifstring.split(' ')[1:]
+        com_heights = np.array([float(txt) for txt in split[:usepoints]]) * max_height
+        com_errors = np.array([float(txt) for txt in split[9:9+usepoints]])
+        print(com_errors)
+    bother = sum(np.abs(com_errors)) > 0.1
+
+    green_multipliers = com_errors * 0.01 + 1.0
+    red_multipliers = (red_errors * 1 + 1.0) * green_multipliers
+    blue_multipliers = (blue_errors * 1 + 1.0) * green_multipliers
+
+    for a, b in zip(com_heights, rb_heights):
+        assert a == b
+
+    # plt.plot(com_heights, com_errors, '.')
+    # plt.plot(rb_heights, red_errors*100, '.', color='red')
+    # plt.plot(rb_heights, blue_errors*100, '.', color='blue')
+    # plt.show()
+    # exit()
+    green_coeff = np.polyfit(com_heights, green_multipliers, 3)
+    cosum = sum(green_coeff)
+    scaling = 1.0 / cosum
+    green_coeff = green_coeff * scaling
+    red_coeff = np.polyfit(com_heights, red_multipliers, 3) * scaling
+    blue_coeff = np.polyfit(com_heights, blue_multipliers, 3) * scaling
+
+    # plt.plot(com_heights, (red_multipliers / green_multipliers - 1) * 10000, color='red')
+    # plt.plot(com_heights, (blue_multipliers / green_multipliers - 1) * 10000, color='blue')
+    # plt.show()
+    # exit()
+
+    # plt.plot(com_heights, green_multipliers,'.')
+    # plt.plot(rb_heights, red_multipliers,'.', color='red')
+    # plt.plot(rb_heights, blue_multipliers,'.', color='blue')
+    # plt.ylim(green_multipliers[-2]-0.0001, green_multipliers[-2]+0.0001)
+    # plt.show()
+
+    alter = np.array((1.0, 1.0, 1.0, min(1.0, 1.0 / green_multipliers[-1])))
+
+    greenlst = ["{:.5f}".format(_) for _ in list(green_coeff*alter)[:]]
+    redlst = ["{:.5f}".format(_) for _ in list(red_coeff*alter)[:]]
+    bluelst = ["{:.5f}".format(_) for _ in list(blue_coeff*alter)[:]]
+    #
+    green_geostring = " ".join(greenlst)
+    red_geostring = " ".join(redlst)
+    blue_geostring = " ".join(bluelst)
+
+    print("Geometric distortion coefficients (RGB):")
+    print(red_geostring)
+    print(green_geostring)
+    print(blue_geostring)
+    # exit()
     # plt.plot(heights, multipliers)
     # plt.show()
-    return geostring
+    return red_geostring, green_geostring, blue_geostring, bother
 
-# distortioncalc("")
+# distortioncalc("", "")
 # exit()
 WORKING_DIR = "/home/sam/mtfmapper_temp/"
 
@@ -42,12 +111,20 @@ for arg in argv[1:]:
         continue
 
     process_subdir = os.path.join(processpath, "mtfm3")
-    process_subdir_corr = os.path.join(processpath, "mtfm4")
+    process_subdir_ca = os.path.join(processpath, "mtfm4")
+    process_subdir_fullcorr = os.path.join(processpath, "mtfm5")
     print("Processing path {}".format(processpath))
 
     try:
         os.mkdir(process_subdir)
-        os.mkdir(process_subdir_corr)
+    except FileExistsError:
+        pass
+    try:
+        os.mkdir(process_subdir_ca)
+    except FileExistsError:
+        pass
+    try:
+        os.mkdir(process_subdir_fullcorr)
     except FileExistsError:
         pass
 
@@ -60,26 +137,31 @@ for arg in argv[1:]:
         if entrynumber < startfile:
             continue
 
-        # if entrynumber != 5:
-        #     continue
+        #if entrynumber != 8647:
+        #    continue
+
         # Check for existing results
-        new_txtfilepath = os.path.join(process_subdir, "{}.sfr".format(entry.name))
-        new_txtfilepath_corr = os.path.join(process_subdir_corr, "{}.corr.sfr".format(entry.name))
-        if os.path.exists(new_txtfilepath):
-            print("{} appears to already exist, skipping processing".format(new_txtfilepath))
-            continue
+        new_txtfilepath = os.path.join(process_subdir, "{}.no_corr.sfr".format(entry.name))
+        new_txtfilepath_ca = os.path.join(process_subdir_ca, "{}.ca_only.sfr".format(entry.name))
+        new_txtfilepath_fullcorr = os.path.join(process_subdir_fullcorr, "{}.ca_and_distortion.sfr".format(entry.name))
 
         print("Processing file {}".format(entry.name))
 
         # Process RAF exif
         exif = subprocess.check_output(["exiftool", entry.path])
         exiflines = [line.decode(encoding='utf-8', errors='strict') for line in exif.splitlines()]
+
         aperture = ""
         focal_length = ""
         lens_model = ""
         max_aperture = ""
+        distortionexif = ""
+        ca_exif = []
+
         exifpath = os.path.join(process_subdir, entry.name + ".exif.csv")
-        exifpath_corr = os.path.join(process_subdir_corr, entry.name + ".exif.csv")
+        exifpath_ca = os.path.join(process_subdir_ca, entry.name + ".exif.csv")
+        exifpath_fullcorr = os.path.join(process_subdir_fullcorr, entry.name + ".exif.csv")
+
         with open(exifpath, 'w') as file:
             writer = csv.writer(file, delimiter=",", quotechar="|")
             for line in exiflines:
@@ -99,59 +181,134 @@ for arg in argv[1:]:
                 elif tag == "Chromatic Aberration Params":
                     ca_exif = value
         print("Lens Model {}, Aperture {}, Focal Length {}".format(lens_model, aperture, focal_length))
-        shutil.copy(exifpath, exifpath_corr)
+
+        distorted = check_if_distortion_corrections_needed(distortionexif)
+        if distorted:
+            print("Lens has distortion correction in EXIF")
+        else:
+            print("Lens does not need distortion correction")
+
+
+        if os.path.exists(new_txtfilepath) and \
+                os.path.exists(new_txtfilepath_ca) and (os.path.exists(new_txtfilepath_fullcorr) or not distorted):
+            print("{} appears to already exist, skipping processing".format(new_txtfilepath))
+            continue
+
+        shutil.copy(exifpath, exifpath_ca)  # Copy exif to results dir
+        if distorted:
+            shutil.copy(exifpath, exifpath_fullcorr)  # Copy exif to results dir
+
         # Symlink RAF file to working directory
-        linkpathname = os.path.join(WORKING_DIR, entry.name)
+        linked_raw_path = os.path.join(WORKING_DIR, entry.name)
         try:
-            os.remove(linkpathname)
+            os.remove(linked_raw_path)
         except FileNotFoundError:
             pass
-
-        print("Linking {} -> {}".format(entry.path, linkpathname))
-        os.symlink(entry.path, linkpathname)
+        print("Linking {} -> {}".format(entry.path, linked_raw_path))
+        os.symlink(entry.path, linked_raw_path)
 
         # Prepare to process raw
-        ppmpathname = linkpathname + ".ppm"
+        uncorrected_image_path = linked_raw_path + ".ppm"
         try:
-            os.remove(ppmpathname)
+            os.remove(uncorrected_image_path)
+            print("Removed exising demosaiced image")
         except FileNotFoundError:
             pass
         print("Calling Libraw dcraw_emu to demosaic...")
-        output = subprocess.check_output(["dcraw_emu", "-a", "-4", linkpathname])
+        output = subprocess.check_output(["dcraw_emu", "-4", "-a", linked_raw_path])
 
-        print("Running distortion correction...")
-        geocoeff = distortioncalc(distortionexif)
-        correctedpath = os.path.join(WORKING_DIR, entry.name+".corrected.ppm")
-        output = subprocess.check_output(["convert", ppmpathname, "-depth", "16", "-filter", "lanczos",
-                                          "-distort", "barrel", geocoeff,
-                                          correctedpath])
-        """convert image.jpg -write MPR:orig +delete \
-   \( MPR:orig -separate -delete 1,2 -affine <red transform>  \) \
-   \( MPR:orig -separate -delete 0,2 -affine <green tranform> \) \
-   \( MPR:orig -separate -delete 0,1 -affine <blue transform> \) \
-   -combine result.jpg """
-        # exit()
-        print("Running mtf_mapper...")
-        output = subprocess.check_output(["mtf_mapper", "-q", "--nosmoothing", "--optimize-distortion", ppmpathname, WORKING_DIR])
 
-        # Move output to output directory
-        txtfilepath = os.path.join(WORKING_DIR, "edge_sfr_values.txt")
-        print("Moving {} -> {}".format(txtfilepath, new_txtfilepath))
-        shutil.move(txtfilepath, new_txtfilepath)
+        print("Running CA and maybe distortion correction loops...")
+        print()
+        for n in range(3 if distorted else 2):
+            if n == 0:
+                print("Loop 1: No corrections")
+            elif n == 1:
+                print("Loop 2: CA Corrections only")
+            if n >= 1:
+                red, green, blue, bother = distortioncalc(None, ca_exif)
+                if n == 2:
+                    red, green, blue, bother = distortioncalc(distortionexif, ca_exif)
+                    print("Loop 3: CA and distortion correction")
 
-        print("Running mtf_mapper corrected...")
-        output = subprocess.check_output(["mtf_mapper", "-q", "--nosmoothing", "--optimize-distortion", correctedpath, WORKING_DIR])
+                corrected_image_path = os.path.join(WORKING_DIR, entry.name + ".corrected.ppm")
 
-        # Move output to output directory
-        txtfilepath = os.path.join(WORKING_DIR, "edge_sfr_values.txt")
-        print("Moving {} -> {}".format(txtfilepath, new_txtfilepath_corr))
-        shutil.move(txtfilepath, new_txtfilepath_corr)
+                channelpath = os.path.join(WORKING_DIR, entry.name+".channel_%d.pgm")
 
-        os.remove(ppmpathname)
-        os.remove(correctedpath)
-        os.remove(linkpathname)
-        print("Removing temporary file {}".format(ppmpathname))
+                redpath = os.path.join(WORKING_DIR, entry.name+".channel_0.pgm")
+                greenpath = os.path.join(WORKING_DIR, entry.name+".channel_1.pgm")
+                bluepath = os.path.join(WORKING_DIR, entry.name+".channel_2.pgm")
+
+                print("Separating channels...")
+                output = subprocess.check_output(["convert", uncorrected_image_path, "-depth", "16",
+                                                  "-channel", "RGB", "-separate", channelpath])
+                print("Processing red...")
+                output = subprocess.check_output(["mogrify", "-filter", "lanczos", "-depth",
+                                                  "16", "-distort", "barrel", red, redpath])
+                if n == 2:
+                    print("Processing green...")
+                    output = subprocess.check_output(["mogrify", "-filter", "lanczos",  "-depth",
+                                                      "16", "-distort", "barrel", green, greenpath])
+                else:
+                    print("Skipping green as CA correction only")
+                print("Processing blue...")
+                output = subprocess.check_output(["mogrify", "-filter", "lanczos",  "-depth",
+                                                  "16", "-distort", "barrel", blue, bluepath])
+                print("Merging channels...")
+                output = subprocess.check_output(["convert", "-depth", "16",
+                                                  redpath, greenpath, bluepath, "-combine", corrected_image_path])
+                print("Removing temporary channel files...")
+                os.remove(redpath)
+                os.remove(greenpath)
+                os.remove(bluepath)
+
+
+            if n == 0:
+                image_to_analyse = uncorrected_image_path
+
+            elif n >= 1:
+                image_to_analyse = corrected_image_path
+            else:
+                raise Exception()
+
+            print("Running mtf_mapper for loop {}...".format(n+1))
+            print("Analysing file '{}'...".format(image_to_analyse))
+            output = subprocess.check_output(["mtf_mapper", "-a", "-q", "--nosmoothing", image_to_analyse, WORKING_DIR])
+
+            temp_txt_output_path = os.path.join(WORKING_DIR, "edge_sfr_values.txt")
+
+            if n == 0:
+                destination_txt_path = new_txtfilepath
+                output = subprocess.check_output(["convert", uncorrected_image_path, uncorrected_image_path + ".jpg"])
+            elif n == 1:
+                destination_txt_path = new_txtfilepath_ca
+                output = subprocess.check_output(["convert", corrected_image_path, corrected_image_path + ".ca_only.jpg"])
+            elif n == 2:
+                destination_txt_path = new_txtfilepath_fullcorr
+                output = subprocess.check_output(["convert", corrected_image_path, corrected_image_path + ".full.jpg"])
+            else:
+                raise Exception()
+
+            print("Moving {} -> {}".format(temp_txt_output_path, destination_txt_path))
+            try:
+                os.remove(destination_txt_path)
+            except FileNotFoundError:
+                pass
+            shutil.move(temp_txt_output_path, destination_txt_path)
+            print()
+
+        os.remove(linked_raw_path)
+        print("Removing temporary file {}".format(uncorrected_image_path))
+        print("Removing temporary file {}".format(corrected_image_path))
+        os.remove(uncorrected_image_path)
+        os.remove(corrected_image_path)
         print()
 
 
+        # output = subprocess.check_output(["convert", uncorrected_image_path, "-depth", "8", "-filter", "lanczos",
+        #                                   "-write", "MPR:orig", "+delete",
+        #                                   "(", "MPR:orig", "-separate", "-delete", "1,2", "-distort", "barrel", red, ")",
+        #                                   "(", "MPR:orig", "-separate", "-delete", "1,2", "-distort", "barrel", green, ")",
+        #                                   "(", "MPR:orig", "-separate", "-delete", "1,2", "-distort", "barrel", blue, ")",
+        #                                   "-combine", corrected_image_path])
 

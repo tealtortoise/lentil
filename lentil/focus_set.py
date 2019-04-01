@@ -7,7 +7,7 @@ from operator import itemgetter
 from scipy import optimize, interpolate, stats
 
 from lentil.sfr_point import SFRPoint
-from lentil.sfr_field import SFRField
+from lentil.sfr_field import SFRField, NotEnoughPointsException
 from lentil.plot_utils import FieldPlot, Scatter2D, COLOURS
 from lentil.constants_utils import *
 
@@ -99,8 +99,13 @@ class FocusSet:
                     elif row[0] == "lens_name":
                         self.lens_name = row[1]
                 pathnames = [os.path.join(rootpath, stubname) for stubname in stubnames]
+                exif = EXIF(pathnames[0])
+                self.exif = exif
                 for pathname in pathnames:
-                    self.fields.append(SFRField(pathname=pathname, calibration=calibration))
+                    try:
+                        self.fields.append(SFRField(pathname=pathname, calibration=calibration, exif=exif))
+                    except NotEnoughPointsException:
+                        pass
         except FileNotFoundError:
             print("Did not find lentildata, finding files...")
             with os.scandir(rootpath) as it:
@@ -127,10 +132,14 @@ class FocusSet:
                     filenames.append((entrynumber, fullpathname, stubname))
 
                     filenames.sort()
-
+            exif = EXIF(filenames[0][1])
+            self.exif = exif
             for entrynumber, pathname, filename in filenames:
                 print("Opening file {}".format(pathname))
-                field = SFRField(pathname=pathname, calibration=calibration)
+                try:
+                    field = SFRField(pathname=pathname, calibration=calibration, exif=exif)
+                except NotEnoughPointsException:
+                    continue
                 field.filenumber = entrynumber
                 field.filename = filename
                 self.fields.append(field)
@@ -360,10 +369,11 @@ class FocusSet:
         weights = weights / weights.max()  # Normalise
 
         log.debug("Fit weightings {}".format(weights))
+        # print(weights)
         sigmas = 1. / weights
 
         fitted_params, _ = optimize.curve_fit(fastgauss, x_values, y_values,
-                                              bounds=bounds, sigma=sigmas, ftol=0.0001, xtol=0.0001,
+                                              bounds=bounds, sigma=sigmas, ftol=0.0001, xtol=0.001,
                                               p0=(highest_data_y, mean_peak_x, 2.0,))
 
         log.debug("Gaussian fit peak is {:.3f} at {:.2f}".format(fitted_params[0], fitted_params[1]))
@@ -386,6 +396,9 @@ class FocusSet:
         if mean_abs_error_rel > 0.12:
             errorstr = "Very high fit error: {:.3f}".format(mean_abs_error_rel)
             log.warning(errorstr)
+            print(x, y, freq, axis)
+            # plt.plot(x_values, y_values)
+            # plt.show()
             pos = FocusOb(gaussfit_peak_x, gaussfit_peak_y, interp_fn, curvefn)
             raise FitError(errorstr, fitpos=pos)
         elif mean_abs_error_rel > 0.06:
@@ -762,11 +775,13 @@ class FocusSet:
             plot.plot(plot_type)
         return FocusOb(peak_focus_pos, average[int(peak_focus_pos * 10)], interpfn)
 
-    def plot_mtf_vs_image_height(self, analysis_pos=None, freqs=(0.05, 0.2), detail=0.5, axis=MEDIAL):
+    def plot_mtf_vs_image_height(self, analysis_pos=None, freqs=(0.05, 0.2), detail=0.5, axis=MEDIAL, show=True,
+                                 show_diffraction=None):
         gridit, numpyarr, x_vals, y_vals = self.get_grids(detail=detail)
         heights = numpyarr.copy()
         arrs = []
         legends = []
+        fig = plt.figure()
         if axis == MEDIAL:
             axis = [SAGITTAL, MERIDIONAL]
             axis = [SAGITTAL, MERIDIONAL]
@@ -780,9 +795,12 @@ class FocusSet:
                     heights[ny, nx] = calc_image_height(x, y)
                     if analysis_pos is None:
                         try:
-                            arr[ny, nx] = self.find_best_focus(x, y, freq, loopaxis).sharp
+                            ob = self.find_best_focus(x, y, freq, loopaxis)
+                            arr[ny, nx] = ob.sharp
+                            # if ob.sharp > 0.95:
+                            #     print(ob.sharp, x, y, heights[ny, nx], loopaxis)
                         except FitError as e:
-                            arr[ny, nx] = e.fitpos.sharp
+                            arr[ny, nx] = np.nan
                     else:
                         arr[ny, nx] = self.interpolate_value(x, y, analysis_pos.focuspos, freq, loopaxis)
 
@@ -799,16 +817,20 @@ class FocusSet:
                 plot.xmax = 1.0
                 plot.xlabel = "Normalised Image Height"
                 plot.ylabel = "Modulation Transfer Function"
-                plot.title = self.lens_name
+                plot.title = self.exif.summary
+                if show_diffraction:
+                    plot.hlines = diffraction_mtf(np.array(freqs), show_diffraction)
+                    plot.hlinelabels = "f{} diffraction".format(show_diffraction)
                 plot.smoothplot(lineformat=lineformat, show=False, color=COLOURS[[0, 3, 4][nfreq]],
                                 label="{:.2f} lp/mm {}".format(freq * 250, loopaxis[0]),
-                                marker="^" if loopaxis is SAGITTAL else "s")
+                                marker="^" if loopaxis is SAGITTAL else "s",points_limit=4.0)
                 # legends.append("{:.2f} cy/px {}".format(freq, loopaxis))
                 # legends.append("{:.2f} cy/px {}".format(freq, loopaxis))
                 # legends.append(None)
                 # legends.append()
         plt.legend()
-        plt.show()
+        if show:
+            plt.show()
 
     def guess_focus_shift_field(self, detail=1.0, axis=MEDIAL):
         gridit, numarr, x_values, y_values = self.get_grids(detail=detail)
