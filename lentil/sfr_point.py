@@ -11,7 +11,7 @@ class SFRPoint:
     Holds all data for one SFR edge analysis point
     """
 
-    def __init__(self, rowdata=None, rawdata=None, pixelsize=None, calibration=None):
+    def __init__(self, rowdata=None, rawdata=None, pixelsize=None, calibration=None, truncate_lobes=True):
         """
         Processes row from csv reader
 
@@ -23,7 +23,11 @@ class SFRPoint:
             self.y = float(rowdata[2])
             self.angle = float(rowdata[3])
             self.radialangle = float(rowdata[4])
-            self.raw_sfr_data = np.array([float(cell) for cell in rowdata[5:-1]])
+            floated = [float(cell) for cell in rowdata[5:-1]]
+            if truncate_lobes:
+                self.raw_sfr_data = truncate_at_zero(floated)
+            else:
+                self.raw_sfr_data = np.array(floated)
         elif rawdata is not None:
             if len(rawdata) < 64:
                 self.raw_sfr_data = np.pad(rawdata, (0, 32), 'constant', constant_values=0.0)

@@ -1,4 +1,5 @@
 import csv
+import os
 import numpy
 import numpy as np
 from scipy import interpolate
@@ -24,8 +25,8 @@ FIELD_SMOOTHING_MIN_POINTS = 40
 FIELD_SMOOTHING_MAX_RATIO = 0.3
 FIELD_SMOOTHING_ORDER = 3
 
-LOW_BENCHMARK_FSTOP = 23
-HIGH_BENCHBARK_FSTOP = 8
+LOW_BENCHMARK_FSTOP = 16
+HIGH_BENCHBARK_FSTOP = 4
 # LOW_BENCHMARK_FSTOP = 32
 # HIGH_BENCHBARK_FSTOP = 13
 
@@ -179,11 +180,17 @@ class EXIF:
         self.ca_exif = value
 
         if exif_pathname is None:
-            split = sfr_pathname.split(".")
-            exif_pathname = ".".join(split[:2]) + ".exif.csv"
+            pathsplit = os.path.split(sfr_pathname)
+
+            fnamesplit = pathsplit[1].split(".")
+            exiffilename = ".".join(fnamesplit[:2]) + ".exif.csv"
+            exif_pathname = os.path.join(pathsplit[0], exiffilename)
             print(exif_pathname)
         try:
+            print("Tring to open {}".format(exif_pathname))
+            print(pathsplit)
             with open(exif_pathname, 'r') as file:
+                print("Found EXIF file")
                 reader = csv.reader(file, delimiter=',', quotechar='|')
                 for row in reader:
                     if row[0] in self.exif:
@@ -213,3 +220,26 @@ class EXIF:
         if len(self.exif) is 0:
             return "No EXIF available"
         return "{} at {}, f/{}".format(self.lens_model, self.focal_length, self.aperture)
+
+
+def truncate_at_zero(in_sfr):
+    # in_sfr = np.array(in_sfr) + 0.0
+    # plt.plot(RAW_SFR_FREQUENCIES[:len(in_sfr)], in_sfr)
+    sfr = np.concatenate(([1.0], in_sfr, [0.0]))
+    l = len(sfr)
+    derivative = sfr[1:l] - sfr[:l-1]
+    # plt.plot(RAW_SFR_FREQUENCIES[:l-3], derivative[1:l-2], '--')
+    # plt.plot(RAW_SFR_FREQUENCIES[:l-3], sfr[1:l-2], '--')
+    # plt.hlines([0], 0, 1, linestyles='dotted')
+    # derivative_shift = derivative[:32]
+    # second_der = derivative_shift - derivative[:32]
+    # plt.plot(RAW_SFR_FREQUENCIES[:l-3], derivative[:l-3])
+    cuts = np.all((derivative[1:l-1] > 0.002, derivative[:l-2] < 0.002, sfr[1:l-1] < 0.13), axis=0)
+    cumsum = np.cumsum(cuts)
+    # plt.plot(RAW_SFR_FREQUENCIES[:l-2], cumsum)
+    out_sfr = in_sfr * (cumsum == 0) + 1e-6
+    # print(sfr[1:l-1] < 0.08)
+    # print(cuts)
+    # plt.plot(RAW_SFR_FREQUENCIES[:len(in_sfr)], out_sfr-0.01)
+    # plt.show()
+    return out_sfr

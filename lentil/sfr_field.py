@@ -147,7 +147,7 @@ class SFRField():
         fn = interpolate.SmoothBivariateSpline(x_lst, y_lst, z_lst, kx=2, ky=2, s=float("inf"))
         return fn
 
-    def interpolate_value(self, x, y, freq=0.1, axis=MEDIAL):
+    def interpolate_value(self, x, y, freq=DEFAULT_FREQ, axis=MEDIAL):
         """
         Provides an interpolated MTF/SFR for chosen point in field and axis. Uses a locally weighted polynomial plane.
 
@@ -429,3 +429,16 @@ class SFRField():
         for point in self.points:
             point.set_calibration_sharpen(amount, radius, stack)
         self.calibration = self.points[0].calibration
+
+    def plot_sfr_at_point(self, x, y, axis=MERIDIONAL):
+        freqs = RAW_SFR_FREQUENCIES[:32]
+        ys = []
+        for freq in freqs:
+            ys.append(self.interpolate_value(x, y, freq, axis))
+        # ys = truncate_at_zero(ys)
+        # exit()
+        plt.plot(freqs, ys)
+        plt.xlabel("Spacial frequency (cy/px)")
+        plt.ylabel("SFR")
+        plt.title(self.exif.summary + " at {:.0f}, {:.0f}".format(x, y))
+        plt.show()

@@ -20,6 +20,11 @@ def check_if_distortion_corrections_needed(exifstring):
     com_errors = np.array([float(txt) for txt in split[9:17]])
     return sum(np.abs(com_errors)) > 0.1
 
+def check_if_ca_corrections_needed(castring):
+    split = castring.split(' ')[1:]
+    com_errors = np.array([float(txt) for txt in split[9:27]])
+    return sum(np.abs(com_errors)) > 0.000001
+
 
 def distortioncalc(exifstring, castring):
     # GEOEXAMPLE = "400.5555556 0.3535211268 0.5 0.6126760563 0.7070422535 0.7908450704 0.8661971831 0.9352112676 1 1.06056338 -1.172515869 -2.354660034 -3.458114624 -4.434677124 -5.274719238 -5.918792725 -6.328369141 -6.426345825 -6.42634582"
@@ -183,18 +188,23 @@ for arg in argv[1:]:
         print("Lens Model {}, Aperture {}, Focal Length {}".format(lens_model, aperture, focal_length))
 
         distorted = check_if_distortion_corrections_needed(distortionexif)
+        caed = check_if_ca_corrections_needed(ca_exif)
+        print(ca_exif)
+        if caed:
+            print("Lens has LaCA correction in EXIF")
+        else:
+            print("Lens does not need LaCA correction")
         if distorted:
             print("Lens has distortion correction in EXIF")
         else:
             print("Lens does not need distortion correction")
 
-
         if os.path.exists(new_txtfilepath) and \
-                os.path.exists(new_txtfilepath_ca) and (os.path.exists(new_txtfilepath_fullcorr) or not distorted):
+                (os.path.exists(new_txtfilepath_ca) or not caed) and (os.path.exists(new_txtfilepath_fullcorr) or not distorted):
             print("{} appears to already exist, skipping processing".format(new_txtfilepath))
             continue
-
-        shutil.copy(exifpath, exifpath_ca)  # Copy exif to results dir
+        if caed:
+            shutil.copy(exifpath, exifpath_ca)  # Copy exif to results dir
         if distorted:
             shutil.copy(exifpath, exifpath_fullcorr)  # Copy exif to results dir
 
@@ -220,7 +230,12 @@ for arg in argv[1:]:
 
         print("Running CA and maybe distortion correction loops...")
         print()
-        for n in range(3 if distorted else 2):
+        loops = [0]
+        if caed:
+            loops.append(1)
+        if distorted:
+            loops.append(2)
+        for n in loops:
             if n == 0:
                 print("Loop 1: No corrections")
             elif n == 1:
@@ -299,9 +314,10 @@ for arg in argv[1:]:
 
         os.remove(linked_raw_path)
         print("Removing temporary file {}".format(uncorrected_image_path))
-        print("Removing temporary file {}".format(corrected_image_path))
         os.remove(uncorrected_image_path)
-        os.remove(corrected_image_path)
+        if caed or distorted:
+            print("Removing temporary file {}".format(corrected_image_path))
+            os.remove(corrected_image_path)
         print()
 
 

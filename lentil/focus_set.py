@@ -18,6 +18,7 @@ ch = logging.StreamHandler()
 ch.setLevel(logging.DEBUG)
 log.addHandler(ch)
 
+STORE = []
 
 class FocusOb:
     """
@@ -43,9 +44,14 @@ class FocusOb:
 
         def interp_merge(in_x):
             return (a.interpfn(in_x) + b.interpfn(in_x)) * 0.5
+        def curve_merge(in_x):
+            return (a.curvefn(in_x) + b.curvefn(in_x)) * 0.5
 
         new.sharp = interp_merge(mid_x)
+        new.curvefn = curve_merge
         new.interpfn = interp_merge
+        new.x_loc = (a.x_loc + b.x_loc) / 2
+        new.y_loc = (a.y_loc + b.y_loc) / 2
         return new
 
 
@@ -132,6 +138,10 @@ class FocusSet:
                     filenames.append((entrynumber, fullpathname, stubname))
 
                     filenames.sort()
+
+            if len(filenames) is 0:
+                raise ValueError("No fields found!")
+
             exif = EXIF(filenames[0][1])
             self.exif = exif
             for entrynumber, pathname, filename in filenames:
@@ -305,7 +315,7 @@ class FocusSet:
             fields = self.fields
         else:
             lowlim = max(0, limit[0])
-            highlim = min(len(self.fields), limit[1])
+            highlim = min(len(self.fields), max(limit[1], lowlim + 3))
             fields = self.fields[lowlim: highlim]
 
         if axis == MEDIAL:
@@ -318,7 +328,6 @@ class FocusSet:
                 y_values.append(field.interpolate_value(x, y, freq, axis))
         y_values = np.array(y_values)
         x_values = np.arange(lowlim, highlim, 1)  # Arbitrary focus units
-
         interpfn = interpolate.InterpolatedUnivariateSpline(x_values, y_values, k=order)
         pos = FocusOb(interpfn=interpfn)
         pos.focus_data = x_values
@@ -341,7 +350,14 @@ class FocusSet:
         if axis == MEDIAL:
             best_s = self.find_best_focus(x, y, freq, SAGITTAL, plot, show, strict)
             best_m = self.find_best_focus(x, y, freq, MERIDIONAL, plot, show, strict)
-            return FocusOb.get_midpoint(best_s, best_m)
+            mid = FocusOb.get_midpoint(best_s, best_m)
+            if 0 and 0.6<calc_image_height(x, y)<0.7:
+                print("     ", best_s.x_loc, best_s.y_loc, best_s.focuspos)
+                print("     ", best_m.x_loc, best_m.y_loc, best_m.focuspos)
+                print("     ", mid.x_loc, mid.y_loc, mid.focuspos)
+            # STORE.append(mid.focuspos)
+            # print(sum(STORE) / len(STORE))
+            return mid
 
         pos = self.get_interpolation_fn_at_point(x, y, freq, axis)
         x_values = pos.focus_data
@@ -404,13 +420,17 @@ class FocusSet:
         elif mean_abs_error_rel > 0.06:
             errorstr = "High fit error: {:.3f}".format(mean_abs_error_rel)
             log.warning(errorstr)
+            # print(x, y, freq, axis)
+            # plt.plot(x_values, y_values)
+            # plt.show()
             if strict:
                 errorstr = "Strict mode, fit aborted".format(mean_abs_error_rel)
                 log.warning(errorstr)
                 pos = FocusOb(gaussfit_peak_x, gaussfit_peak_y, interp_fn, curvefn)
                 raise FitError(errorstr, fitpos=pos)
 
-        if plot:
+        if plot or 0 and  0.6<calc_image_height(x, y)<0.7:
+            # print(x,y,freq, axis, gaussfit_peak_x)
             # Plot original data
             plt.plot(x_values, y_values, '.', marker='s', color='forestgreen', label="Original data points", zorder=11)
             plt.plot(x_values, y_values, '-', color='forestgreen', alpha=0.3, label="Original data line", zorder=-1)
@@ -433,15 +453,30 @@ class FocusSet:
             plt.legend()
             if show:
                 plt.show()
+        ob = FocusOb(gaussfit_peak_x, gaussfit_peak_y, interp_fn, curvefn)
+        ob.x_loc = x
+        ob.y_loc = y
+        return ob
 
-        return FocusOb(gaussfit_peak_x, gaussfit_peak_y, interp_fn, curvefn)
+    def interpolate_value(self, x, y, focus, freq=AUC, axis=MEDIAL, posh=False):
+        if int(focus) == 0:
+            limit_low = 0
+            limit_high = int(focus) + 3
+        elif int(focus+1) >= len(self.fields):
+            limit_low = int(focus) - 2
+            limit_high = int(focus) + 2
+        else:
+            limit_low = int(focus) - 1
+            limit_high = int(focus) + 2
+        if posh:
 
-    def interpolate_value(self, x, y, focus, freq=AUC, axis=MEDIAL):
-        limit_low = int(focus) - 1
-        limit_high = int(focus) + 2
-        point_pos = self.get_interpolation_fn_at_point(x, y, freq, axis=axis,
-                                                       limit=(limit_low, limit_high))
-        return point_pos.interpfn(focus)
+            point_pos = self.find_best_focus(x, y, freq, axis=axis)
+            return point_pos.curvefn(focus)
+
+        else:
+            point_pos = self.get_interpolation_fn_at_point(x, y, freq, axis=axis,
+                                                           limit=(limit_low, limit_high))
+            return point_pos.interpfn(focus)
 
     def plot_field_curvature_strip(self, freq, show=True):
         sag = []
@@ -502,6 +537,59 @@ class FocusSet:
             plt.plot(x_values, secondline_fn(x_values))
         if show:
             plt.show()
+
+    def plot_sfr_vs_freq_at_point_for_each_field(self, x, y, axis=MEDIAL, waterfall=False):
+        fig = plt.figure()
+        if waterfall:
+            ax = fig.add_subplot(111, projection='3d')
+        else:
+            ax = fig.add_subplot(111)
+        freqs = np.concatenate((RAW_SFR_FREQUENCIES[:32:1], [AUC]))
+        for nfreq, freq in enumerate(freqs):
+            print("Running frequency {:.2f}...".format(freq))
+            responses = []
+            for fn, field in enumerate(self.fields):
+                res = field.interpolate_value(x, y, freq, axis)
+                if res > 0.01:
+                    responses.append(res)
+                else:
+                    responses.append(0.01)
+
+            if waterfall:
+                if freq == AUC:
+                    colour = 'black'
+                else:
+                    colour = 'black'
+                    colour = plt.cm.brg(nfreq / len(freqs))
+                plt.plot([nfreq / 65] * len(self.fields), np.arange(len(self.fields)),
+                         np.log(responses) / (np.log(10) / 20.0),
+                         label="Field {}".format(fn), color=colour, alpha=0.8)
+            else:
+                if freq == AUC:
+                    colour = 'black'
+                else:
+                    colour = 'black'
+                    colour = plt.cm.jet(nfreq / len(freqs))
+                if freq == AUC:
+                    label = "Mean / Area under curve"
+                else:
+                    label = "{:.2f} cy/px".format(freq)
+                plt.plot(np.arange(len(self.fields)), np.log(responses) / (np.log(10) / 20.0),
+                         label=label, color=colour, alpha=1.0 if freq==AUC else 0.9)
+        if waterfall:
+            ax.set_xlabel("Spacial Frequency (cy/px")
+            ax.set_ylabel("Focus position")
+            ax.set_zlabel("SFR (dB - log scale)")
+            ax.set_zlim(-40, 0)
+        else:
+            ax.set_xlabel("Focus Position")
+            ax.set_ylabel("SFR (dB (log scale))")
+            ax.set_ylim(-40,0)
+            ax.legend()
+
+        ax.set_title("SFR vs Frequency for {}".format(self.exif.summary))
+        # ax.legend()
+        plt.show()
 
     def get_peak_sfr(self, x=(IMAGE_WIDTH / 2), y=(IMAGE_HEIGHT / 2), freq=AUC, axis=MEDIAL, plot=False, show=False):
         """
@@ -665,7 +753,7 @@ class FocusSet:
         return self.fields[0].get_grids(*args, **kwargs)
 
     def find_compromise_focus(self, freq=AUC, axis=MEDIAL, detail=1.0, plot_freq=None, weighting_fn=EVEN_WEIGHTED,
-                              plot_type=PROJECTION3D, midfield_bias_comp=True):
+                              plot_type=PROJECTION3D, midfield_bias_comp=True, precision=0.1):
         """
         Finds optimial compromise flat-field focus postion
 
@@ -681,7 +769,8 @@ class FocusSet:
 
         gridit, numpyarray, x_values, y_values = self.get_grids(detail)
         n_fields = len(self.fields)
-        field_locs = np.arange(0, n_fields, 0.1)  # Analyse with 0.1 field accuracy
+        inc = precision
+        field_locs = np.arange(0, n_fields, inc)  # Analyse with 0.1 field accuracy
 
         # Made sfr data array
         sharps = np.repeat(numpyarray[:,:,np.newaxis], len(field_locs), axis=2)
@@ -732,7 +821,7 @@ class FocusSet:
         # poly = np.polyfit(field_locs[slice_], average[slice_], 2)
         # polyder = np.polyder(poly, 1)
         # peak_focus_pos = np.roots(polyder)[0]
-        peak_focus_pos = np.argmax(average) / 10.0
+        peak_focus_pos = np.argmax(average) * inc
         print("Found peak focus at position {:.2f}".format(peak_focus_pos))
 
         interpfn = interpolate.InterpolatedUnivariateSpline(field_locs, average)
@@ -753,7 +842,7 @@ class FocusSet:
                 interpfn = self.find_best_focus(x, y, plot_freq, axis=axis).interpfn
                 sharpfield[n_y, n_x] = interpfn(peak_focus_pos)
         else:
-            sharpfield = sharps[:, :, int(peak_focus_pos*10 + 0.5)]
+            sharpfield = sharps[:, :, int(peak_focus_pos/inc + 0.5)]
 
         # Move on to plotting results
         if plot_type is not None:
@@ -775,8 +864,8 @@ class FocusSet:
             plot.plot(plot_type)
         return FocusOb(peak_focus_pos, average[int(peak_focus_pos * 10)], interpfn)
 
-    def plot_mtf_vs_image_height(self, analysis_pos=None, freqs=(0.05, 0.2), detail=0.5, axis=MEDIAL, show=True,
-                                 show_diffraction=None):
+    def plot_mtf_vs_image_height(self, analysis_pos=None, freqs=(15 / 250, 45/250, 75/250), detail=0.5, axis=MEDIAL, show=True,
+                                 show_diffraction=None, posh=False):
         gridit, numpyarr, x_vals, y_vals = self.get_grids(detail=detail)
         heights = numpyarr.copy()
         arrs = []
@@ -802,7 +891,7 @@ class FocusSet:
                         except FitError as e:
                             arr[ny, nx] = np.nan
                     else:
-                        arr[ny, nx] = self.interpolate_value(x, y, analysis_pos.focuspos, freq, loopaxis)
+                        arr[ny, nx] = self.interpolate_value(x, y, analysis_pos.focuspos, freq, loopaxis, posh=posh)
 
                 if loopaxis == SAGITTAL:
                     lineformat = '--'
