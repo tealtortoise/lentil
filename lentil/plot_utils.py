@@ -132,6 +132,51 @@ class FieldPlot:
             return None
         return ax
 
+    def smooth2d(self, ax=None, show=True):
+        # Move on to plotting results
+        # if ax is None:
+        #     fig, ax = plt.subplots()
+
+        # inc = np.clip((self._zmax - self._zmin) / 20, 0.002, 0.05)
+        # contours = np.arange(int(self._zmin / inc) * inc - inc, self._zmax + inc, inc)
+        # contours = np.arange(0.0, 1.0, 0.005)
+
+        # colors = []
+        # linspaced = np.linspace(0.0, 1.0, len(contours))
+        # for lin, line in zip(linspaced, contours):
+        #     colors.append(plt.cm.jet(1.0 - lin))
+            # colors.append(colorsys.hls_to_rgb(lin * 0.8, 0.4, 1.0))
+
+        # if self.xreverse:
+        #     ax.set_xlim(self._xmax, self._xmin)
+        # else:
+        #     ax.set_xlim(self._xmin, self._xmax)
+        #
+        # if self.yreverse:
+        #     ax.set_ylim(self._ymax, self._ymin)
+        # else:
+        #     ax.set_ylim(self._ymin, self._ymax)
+
+        print(self.zdata.shape)
+        print(self.zdata)
+
+        print(self._zmin)
+        print(self._zmax)
+        print(self.zmin)
+        print(self.zmax)
+        imdata = np.clip(1.0 - (self.zdata - self._zmin) / (self._zmax - self._zmin), 0.0, 1.0)
+        print(imdata)
+        plt.imshow(imdata, cmap=plt.cm.jet, interpolation='lanczos', vmin=0.0, vmax=1.0)
+        plt.xlabel(self.xlabel)
+        plt.ylabel(self.ylabel)
+        # plt.clabel(CS2, inline=1, fontsize=10)
+
+        plt.title(self.title)
+        if show:
+            plt.show()
+            return None
+        return
+
     def projection3d(self, ax=None, show=True):
         if len(self.zdata.shape) is not 2:
             raise ValueError("zdata must be be 2d")
@@ -194,6 +239,9 @@ class FieldPlot:
             return self.contour2d( *args, **kwargs)
         elif plot_type == PROJECTION3D:
             return self.projection3d(*args, **kwargs)
+        elif plot_type == SMOOTH2D:
+            return self.smooth2d(*args, **kwargs)
+
 
 
 class Scatter2D(FieldPlot):

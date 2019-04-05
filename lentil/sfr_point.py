@@ -11,7 +11,7 @@ class SFRPoint:
     Holds all data for one SFR edge analysis point
     """
 
-    def __init__(self, rowdata=None, rawdata=None, pixelsize=None, calibration=None, truncate_lobes=True):
+    def __init__(self, rowdata=None, rawdata=None, pixelsize=None, calibration=None, truncate_lobes=TRUNCATE_MTF_LOBES):
         """
         Processes row from csv reader
 
@@ -67,18 +67,20 @@ class SFRPoint:
             cy_px = lp_mm * self.pixelsize * 1e3
         if cy_px is None:
             raise AttributeError("Must provide frequency in cycles/px or lp/mm")
-        if cy_px == MTF50:
-            if lp_mm is not None:
-                return self.mtf50_lpmm
-            else:
-                return self.mtf50
-        if cy_px == AUC:
-            return self.auc
-        if cy_px == ACUTANCE:
-            return self.get_acutance()
-        if not 0.0 <= cy_px < 1.0:
-            raise AttributeError("Frequency must be between 0 and twice nyquist, or a specified constant")
-
+        try:
+            if cy_px == MTF50:
+                if lp_mm is not None:
+                    return self.mtf50_lpmm
+                else:
+                    return self.mtf50
+            if cy_px == AUC:
+                return self.auc
+            if  cy_px == ACUTANCE:
+                return self.get_acutance()
+            if 0.0 <= cy_px < 1.0:
+                raise AttributeError("Frequency must be between 0 and twice nyquist, or a specified constant")
+        except ValueError:  # Might be numpy array and it all breaks
+            pass
         return self.interpolate_fn(cy_px)
 
     @property
@@ -105,7 +107,17 @@ class SFRPoint:
 
         def callable_(fr):
             return self.interpolate_fn(fr) - 0.5
-        return optimize.newton(callable_, 0.05, tol=0.0003)
+        guess = np.argmax(self.sfr < 0.5) / 65
+        try:
+            mtf50 = optimize.newton(callable_, guess, tol=0.0003)
+        except RuntimeError:
+            if PLOT_MTF50_ERROR:
+                plt.plot(self.raw_sfr_data)
+                plt.plot(self.get_freq(RAW_SFR_FREQUENCIES))
+                plt.show()
+                # self.plot()
+            raise ValueError("Can't find MTF50! Guessed {:.3f}".format(guess))
+        return mtf50
 
     @property
     def mtf50_lpmm(self):

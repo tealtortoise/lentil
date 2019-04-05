@@ -140,7 +140,7 @@ class FocusSet:
                     filenames.sort()
 
             if len(filenames) is 0:
-                raise ValueError("No fields found!")
+                raise ValueError("No fields found! Path '{}'".format(rootpath))
 
             exif = EXIF(filenames[0][1])
             self.exif = exif
@@ -210,7 +210,7 @@ class FocusSet:
 
         num_sheets = 0  # Number of acceptable focus sheets each side of peak focus
         if title is None:
-            title = self.lens_name
+            title = "Ideal focus field " + self.exif.summary
 
         gridit, focus_posits, x_values, y_values = self.get_grids(detail)
         sharps = focus_posits.copy()
@@ -250,7 +250,7 @@ class FocusSet:
                     z_values_low[y_idx, x_idx] -= sheet
                     z_values_high[y_idx, x_idx] -= sheet
 
-        if plot_type == CONTOUR2D:
+        if plot_type == CONTOUR2D or plot_type == SMOOTH2D:
             plot = FieldPlot()
             plot.xticks = x_values
             plot.yticks = y_values
@@ -265,7 +265,7 @@ class FocusSet:
             plot.xlabel = "Image position x"
             plot.ylabel = "Image position y"
             plot.title = title
-            ax = plot.contour2d(ax, show=show)
+            ax = plot.plot(plot_type, ax, show=show)
         else:
             plot = FieldPlot()
 
@@ -334,7 +334,7 @@ class FocusSet:
         pos.sharp_data = y_values
         return pos
 
-    def find_best_focus(self, x, y, freq=DEFAULT_FREQ, axis=MEDIAL, plot=False, show=True, strict=False):
+    def find_best_focus(self, x, y, freq=DEFAULT_FREQ, axis=MEDIAL, plot=False, show=True, strict=False, fitfn=cauchy):
         """
         Get peak SFR at specified location and frequency vs focus, optionally plot.
 
@@ -374,8 +374,8 @@ class FocusSet:
         # Define optimisation bounds
         # bounds = ((highest_data_y * 0.95, mean_peak_x - 0.9, 0.8, -0.3),
         #           (highest_data_y * 1.15, mean_peak_x + 0.9, 50.0, 1.3))
-        bounds = ((highest_data_y * 0.98, mean_peak_x - 0.9, 0.7,),
-                  (highest_data_y * 1.15, mean_peak_x + 0.9, 50.0,))
+        bounds = ((highest_data_y * 0.98, mean_peak_x - 0.9, 0.4,),
+                  (highest_data_y * 1.15, mean_peak_x + 0.9, 40.0,))
 
         offsets = np.arange(len(y_values)) - mean_peak_x  # x-index vs peak estimate
         weights_a = np.clip(1.2 - np.abs(offsets) / 11, 0.1, 1.0) ** 2  # Weight small offsets higher
@@ -384,11 +384,13 @@ class FocusSet:
         weights = weights_a * weights_b  # Merge
         weights = weights / weights.max()  # Normalise
 
-        log.debug("Fit weightings {}".format(weights))
+        # log.debug("Fit weightings {}".format(weights))
         # print(weights)
         sigmas = 1. / weights
 
-        fitted_params, _ = optimize.curve_fit(fastgauss, x_values, y_values,
+        # fitfn = cauchy
+
+        fitted_params, _ = optimize.curve_fit(fitfn, x_values, y_values,
                                               bounds=bounds, sigma=sigmas, ftol=0.0001, xtol=0.001,
                                               p0=(highest_data_y, mean_peak_x, 2.0,))
 
@@ -400,7 +402,7 @@ class FocusSet:
         gaussfit_peak_y = fitted_params[0]
 
         def curvefn(xvals):
-            return fastgauss(xvals, *fitted_params)
+            return fitfn(xvals, *fitted_params)
 
         fit_y = curvefn(x_values)
         errorweights = np.clip((y_values - y_values.max() * 0.8), 0.000001, 1.0)**1
@@ -412,9 +414,10 @@ class FocusSet:
         if mean_abs_error_rel > 0.12:
             errorstr = "Very high fit error: {:.3f}".format(mean_abs_error_rel)
             log.warning(errorstr)
-            print(x, y, freq, axis)
-            # plt.plot(x_values, y_values)
-            # plt.show()
+            print("{}, {}, {}, {}".format(x, y, freq, axis))
+            if PLOT_ON_FIT_ERROR:
+                plt.plot(x_values, y_values)
+                plt.show()
             pos = FocusOb(gaussfit_peak_x, gaussfit_peak_y, interp_fn, curvefn)
             raise FitError(errorstr, fitpos=pos)
         elif mean_abs_error_rel > 0.06:
@@ -858,7 +861,7 @@ class FocusSet:
             plot.zmax = diffraction_mtf(freq, HIGH_BENCHBARK_FSTOP, calibration=None)
             # print(55, plot.zmin)
             # print(55, plot.zmax)
-            plot.title = "Compromise focus flat-field " + self.lens_name
+            plot.title = "Compromise focus flat-field " + self.exif.summary
             plot.xlabel = "x image location"
             plot.ylabel = "y image location"
             plot.plot(plot_type)

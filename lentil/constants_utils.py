@@ -13,6 +13,11 @@ MERIDIONAL = "MERIDIONAL"
 MEDIAL = "MEDIAL"
 BOTH_AXES = "BOTH"
 
+PLOT_ON_FIT_ERROR = True
+PLOT_MTF50_ERROR = True
+
+TRUNCATE_MTF_LOBES = False
+
 SFR_HEADER = [
     'blockid',
     'edgex',
@@ -25,7 +30,7 @@ FIELD_SMOOTHING_MIN_POINTS = 40
 FIELD_SMOOTHING_MAX_RATIO = 0.3
 FIELD_SMOOTHING_ORDER = 3
 
-LOW_BENCHMARK_FSTOP = 16
+LOW_BENCHMARK_FSTOP = 24
 HIGH_BENCHBARK_FSTOP = 4
 # LOW_BENCHMARK_FSTOP = 32
 # HIGH_BENCHBARK_FSTOP = 13
@@ -43,6 +48,7 @@ ACUTANCE_VIEWING_DISTANCE = 0.74
 
 CONTOUR2D = 0
 PROJECTION3D = 1
+SMOOTH2D = 3
 
 DEFAULT_FREQ = -2
 MTF50 = -1
@@ -168,6 +174,10 @@ def twogauss(gaussx, a, b, c, peaky):
     return both
 
 
+def cauchy(xin, max, x0, gamma):
+    return max / (1.0 + ((xin - x0) / gamma) ** 2)
+
+
 class EXIF:
     def __init__(self, sfr_pathname=None, exif_pathname=None):
         self.exif = {}
@@ -243,3 +253,13 @@ def truncate_at_zero(in_sfr):
     # plt.plot(RAW_SFR_FREQUENCIES[:len(in_sfr)], out_sfr-0.01)
     # plt.show()
     return out_sfr
+
+
+def fallback_results_path(basepath, number):
+    for n in range(number, 2, -1):
+        path = os.path.join(basepath, "mtfm{}".format(n))
+        if os.path.exists(path):
+            for entry in os.scandir(path):
+                # if entry.is_file:
+                return path
+    raise FileNotFoundError("Can't find results at path {}".format(basepath))
