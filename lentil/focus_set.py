@@ -157,7 +157,7 @@ class FocusSet:
                 self.remove_duplicated_fields()
                 self.find_relevant_fields(writepath=rootpath, freq=AUC)
 
-    def find_relevant_fields(self, freq=AUC, detail=1, writepath=None):
+    def find_relevant_fields(self, freq=DEFAULT_FREQ, detail=1, writepath=None):
         min_ = float("inf")
         max_ = float("-inf")
         x_values, y_values = self.fields[0].build_axis_points(24 * detail, 16 * detail)
@@ -281,7 +281,8 @@ class FocusSet:
             plot.title = title
             plot.zdata = focus_posits
             plot.wdata = sharps
-            ax = plot.projection3d(ax)
+            plot.alpha = alpha
+            ax = plot.projection3d(ax, show=show)
         return ax, skewplane
 
     def plot_field_curvature_strip_contour(self, freq=DEFAULT_FREQ, axis=MERIDIONAL, theta=THETA_TOP_RIGHT, radius=1.0):
@@ -717,12 +718,12 @@ class FocusSet:
                 log.warning("Existing calibration loaded (will compare calibrations)")
         # Get best AUC focus postion
 
-        f_range = RAW_SFR_FREQUENCIES[:]
+        f_range = RAW_SFR_FREQUENCIES[:40]
         # data_sfr = self.get_peak_sfr(freq=opt_freq, axis=BOTH_AXES).raw_sfr_data[:]
-        data_sfr = self.find_sharpest_raw_points_avg_sfr()
+        data_sfr = self.find_sharpest_raw_points_avg_sfr()[:40]
 
         if not writetofile:
-            data_sfr *= self.base_calibration
+            data_sfr *= self.base_calibration[:40]
 
         diffraction_sfr = diffraction_mtf(f_range, fstop)  # Ideal sfr
 
@@ -911,6 +912,9 @@ class FocusSet:
                 plot.ylabel = "Modulation Transfer Function"
                 plot.title = self.exif.summary
                 if show_diffraction:
+                    if show_diffraction is True:
+                        show_diffraction = self.exif.aperture
+                        print(show_diffraction)
                     plot.hlines = diffraction_mtf(np.array(freqs), show_diffraction)
                     plot.hlinelabels = "f{} diffraction".format(show_diffraction)
                 plot.smoothplot(lineformat=lineformat, show=False, color=COLOURS[[0, 3, 4][nfreq]],

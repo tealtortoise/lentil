@@ -77,7 +77,7 @@ class SFRPoint:
                 return self.auc
             if  cy_px == ACUTANCE:
                 return self.get_acutance()
-            if 0.0 <= cy_px < 1.0:
+            if not 0.0 <= cy_px < 1.0:
                 raise AttributeError("Frequency must be between 0 and twice nyquist, or a specified constant")
         except ValueError:  # Might be numpy array and it all breaks
             pass

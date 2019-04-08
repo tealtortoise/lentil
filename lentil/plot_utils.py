@@ -34,6 +34,8 @@ class FieldPlot:
         self.contours = None
 
         self.hlines = None
+
+        self.alpha = 0.6
     
     @property
     def _xmin(self):
@@ -198,7 +200,7 @@ class FieldPlot:
 
         x, y = np.meshgrid(self.xticks, self.yticks)
 
-        alpha = 0.6
+        alpha = self.alpha
         # print(self.wdata)
         # print(self._wmin)
         # print(self._wmax)

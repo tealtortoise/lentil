@@ -4,6 +4,7 @@ import os
 import shutil
 import sys
 import csv
+import random
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -100,7 +101,13 @@ def distortioncalc(exifstring, castring):
 
 # distortioncalc("", "")
 # exit()
-WORKING_DIR = "/home/sam/mtfmapper_temp/"
+random_number = random.randint(1,9999)
+WORKING_DIR = "/home/sam/mtfmapper_temp{}/".format(random_number)
+try:
+    os.mkdir(WORKING_DIR)
+except FileExistsError:
+    pass
+
 
 argv = sys.argv
 
@@ -167,6 +174,8 @@ for arg in argv[1:]:
         exifpath_ca = os.path.join(process_subdir_ca, entry.name + ".exif.csv")
         exifpath_fullcorr = os.path.join(process_subdir_fullcorr, entry.name + ".exif.csv")
 
+        if os.path.exists(exifpath):
+            os.remove(exifpath)
         with open(exifpath, 'w') as file:
             writer = csv.writer(file, delimiter=",", quotechar="|")
             for line in exiflines:
@@ -204,8 +213,12 @@ for arg in argv[1:]:
             print("{} appears to already exist, skipping processing".format(new_txtfilepath))
             continue
         if caed:
+            if os.path.exists(exifpath_ca):
+                os.remove(exifpath_ca)
             shutil.copy(exifpath, exifpath_ca)  # Copy exif to results dir
         if distorted:
+            if os.path.exists(exifpath_fullcorr):
+                os.remove(exifpath_fullcorr)
             shutil.copy(exifpath, exifpath_fullcorr)  # Copy exif to results dir
 
         # Symlink RAF file to working directory
@@ -225,7 +238,7 @@ for arg in argv[1:]:
         except FileNotFoundError:
             pass
         print("Calling Libraw dcraw_emu to demosaic...")
-        output = subprocess.check_output(["dcraw_emu", "-4", "-a", linked_raw_path])
+        output = subprocess.check_output(["/home/sam/LibRaw-0.19.2/bin/dcraw_emu", "-4", "-a", linked_raw_path])
 
 
         print("Running CA and maybe distortion correction loops...")
