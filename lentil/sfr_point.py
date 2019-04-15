@@ -77,6 +77,8 @@ class SFRPoint:
                 return self.auc
             if  cy_px == ACUTANCE:
                 return self.get_acutance()
+            if cy_px == LOWAVG:
+                return self.get_lowavg()
             if not 0.0 <= cy_px < 1.0:
                 raise AttributeError("Frequency must be between 0 and twice nyquist, or a specified constant")
         except ValueError:  # Might be numpy array and it all breaks
@@ -150,6 +152,14 @@ class SFRPoint:
         if self.radialangle < 45.0:
             return lentil.constants_utils.MERIDIONAL
         return lentil.constants_utils.SAGITTAL
+
+    def get_lowavg(self):
+        desired_lp_mm = np.array([1,2,3, 4]) / 64 * 250
+        actual_cy_px = desired_lp_mm * self.pixelsize * 1e3
+        # print(actual_cy_px);exit()
+        fn = self.interpolate_fn
+        mean = np.mean(fn(actual_cy_px))
+        return mean
 
     def plot(self):
         """

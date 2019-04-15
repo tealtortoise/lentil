@@ -1,13 +1,20 @@
 import csv
 import os
-import numpy
+import logging
 import numpy as np
 from scipy import interpolate
 import  matplotlib.pyplot as plt
 
+log = logging.getLogger(__name__)
+log.setLevel(logging.DEBUG)
+
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+log.addHandler(ch)
+
 SFRFILENAME = 'edge_sfr_values.txt'
 
-DEFAULT_PIXEL_SIZE = 4e-6
+
 SAGITTAL = "SAGITTAL"
 MERIDIONAL = "MERIDIONAL"
 MEDIAL = "MEDIAL"
@@ -26,9 +33,9 @@ SFR_HEADER = [
     'radialangle'
 ]
 
-FIELD_SMOOTHING_MIN_POINTS = 24
+FIELD_SMOOTHING_MIN_POINTS = 54
 FIELD_SMOOTHING_MAX_RATIO = 0.3
-FIELD_SMOOTHING_ORDER = 3
+FIELD_SMOOTHING_ORDER = 2
 
 LOW_BENCHMARK_FSTOP = 22
 HIGH_BENCHBARK_FSTOP = 4
@@ -36,10 +43,21 @@ HIGH_BENCHBARK_FSTOP = 4
 # HIGH_BENCHBARK_FSTOP = 13
 
 IMAGE_WIDTH = 6000
-IMAGE_HEIGHT = 4000
+# IMAGE_WIDTH = 8256
+# SENSOR_WIDTH = 0.0357
+SENSOR_WIDTH = 0.0236
+
+IMAGE_HEIGHT = IMAGE_WIDTH * 2 / 3
 IMAGE_DIAGONAL = (IMAGE_WIDTH**2 + IMAGE_HEIGHT**2)**0.5
+DEFAULT_PIXEL_SIZE = SENSOR_WIDTH / IMAGE_WIDTH
+
+
 THETA_BOTTOM_RIGHT = np.arctan(IMAGE_HEIGHT / IMAGE_WIDTH)
 THETA_TOP_RIGHT = np.pi * 2.0 - THETA_BOTTOM_RIGHT
+
+# CHART_WIDTH = 18*0.0254
+CHART_WIDTH = 1.188
+CHART_DIAGONAL = (CHART_WIDTH ** 2 + (CHART_WIDTH * IMAGE_HEIGHT / IMAGE_WIDTH)**2) ** 0.5
 
 DEFAULT_SENSOR_DIAGONAL = IMAGE_DIAGONAL * DEFAULT_PIXEL_SIZE
 
@@ -54,6 +72,16 @@ DEFAULT_FREQ = -2
 MTF50 = -1
 AUC = -2
 ACUTANCE = -3
+LOWAVG = -4
+
+DIFFRACTION_WAVELENGTH = 575e-9
+
+FOCUS_SCALE_COC = "Defocus blur circle diameter (µm)"
+FOCUS_SCALE_COC_PIXELS = "Defocus blur circle diameter (pixels)"
+FOCUS_SCALE_FOCUS_SHIFT = "Image-side long. focus shift (µm)"
+FOCUS_SCALE_SUB_FOCUS_SHIFT = "Subject-side focus shift (mm)"
+FOCUS_SCALE_RMS_WFE = "RMS Defocus wavefront error (λ)"
+
 
 def CENTRE_WEIGHTED(height):
     return (1.0 - height) ** 2
@@ -86,7 +114,7 @@ def diffraction_mtf(freq, fstop=8, calibration=None):
     if type(freq) is int and freq == ACUTANCE:
         # print(22, calibration)
         return calc_acutance(diffraction_mtf(RAW_SFR_FREQUENCIES, fstop, calibration))
-    mulfreq = np.clip(freq / 8.0 * fstop, 0, 1)
+    mulfreq = np.clip(freq / DEFAULT_PIXEL_SIZE * DIFFRACTION_WAVELENGTH * fstop, 0, 1)
     if calibration is None:
         calibration_mul = 1.0
     else:
@@ -95,7 +123,8 @@ def diffraction_mtf(freq, fstop=8, calibration=None):
                                                                    'constant',
                                                                    constant_values=0), k=1)
         calibration_mul = np.clip(interpfn(freq), 1e-6, np.inf)
-    return 2.0 / np.pi * (np.arccos(mulfreq) - mulfreq * (1 - mulfreq ** 2) ** 0.5) * calibration_mul
+    diff = 2.0 / np.pi * (np.arccos(mulfreq) - mulfreq * (1 - mulfreq ** 2) ** 0.5) * calibration_mul
+    return diff * 0.98 + 0.02
 
 
 def calc_acutance(sfr, print_height=ACUTANCE_PRINT_HEIGHT, viewing_distance=ACUTANCE_VIEWING_DISTANCE):
@@ -183,53 +212,69 @@ class EXIF:
         self.exif = {}
         value = ""
         self.aperture = 1.0
-        self.focal_length = value
+        self.focal_length_str = value
         self.lens_model = value
         self.max_aperture = value
         self.distortionexif = value
         self.ca_exif = value
 
-        if exif_pathname is None:
+        if exif_pathname is None and sfr_pathname is not None:
             pathsplit = os.path.split(sfr_pathname)
 
             fnamesplit = pathsplit[1].split(".")
             exiffilename = ".".join(fnamesplit[:2]) + ".exif.csv"
             exif_pathname = os.path.join(pathsplit[0], exiffilename)
             print(exif_pathname)
-        try:
-            print("Tring to open {}".format(exif_pathname))
-            print(pathsplit)
-            with open(exif_pathname, 'r') as file:
-                print("Found EXIF file")
-                reader = csv.reader(file, delimiter=',', quotechar='|')
-                for row in reader:
-                    if row[0] in self.exif:
-                        self.exif[row[0]+"_dup"] = row[1]
-                    else:
-                        self.exif[row[0]] = row[1]
+        if exif_pathname is not None:
+            try:
+                print("Tring to open {}".format(exif_pathname))
+                print(pathsplit)
+                with open(exif_pathname, 'r') as file:
+                    print("Found EXIF file")
+                    reader = csv.reader(file, delimiter=',', quotechar='|')
+                    for row in reader:
+                        if row[0] in self.exif:
+                            self.exif[row[0]+"_dup"] = row[1]
+                        else:
+                            self.exif[row[0]] = row[1]
 
-                    tag, value = row[:2]
-                    # print(tag, value)
-                    if tag == "Aperture":
-                        self.aperture = float(value[:])
-                    elif tag == "Focal Length" and "equivalent" not in value:
-                        self.focal_length = value
-                    elif tag == "Lens Model":
-                        self.lens_model = value
-                    elif tag == "Max Aperture Value":
-                        self.max_aperture = value
-                    elif tag == "Geometric Distortion Params":
-                        self.distortionexif = value
-                    elif tag == "Chromatic Aberration Params":
-                        self.ca_exif = value
-        except FileNotFoundError:
-            print("No EXIF found")
+                        tag, value = row[:2]
+                        # print(tag, value)
+                        if tag == "Aperture":
+                            self.aperture = float(value[:])
+                        elif tag == "Focal Length" and "equivalent" not in value:
+                            self.focal_length_str = value
+                        elif tag == "Lens Model":
+                            self.lens_model = value
+                        elif tag == "Max Aperture Value":
+                            self.max_aperture = value
+                        elif tag == "Geometric Distortion Params":
+                            self.distortionexif = value
+                        elif tag == "Chromatic Aberration Params":
+                            self.ca_exif = value
+            except FileNotFoundError:
+                log.warning("No EXIF found")
 
     @property
     def summary(self):
         if len(self.exif) is 0:
             return "No EXIF available"
         return "{} at {}, f/{}".format(self.lens_model, self.focal_length, self.aperture)
+
+    @property
+    def angle_of_view(self):
+        sensor_diagonal_m = IMAGE_DIAGONAL * DEFAULT_PIXEL_SIZE
+        focal_length_m = self.focal_length * 1e-3
+        lens_angle_of_view = 2 * np.arctan(sensor_diagonal_m / focal_length_m / 2)
+        return lens_angle_of_view
+
+    @property
+    def focal_length(self):
+        return float(self.focal_length_str.split(" ")[0])
+
+    @focal_length.setter
+    def focal_length(self, floatin):
+        self.focal_length_str = "{:.1f} mm".format(floatin)
 
 
 def truncate_at_zero(in_sfr):
@@ -263,3 +308,125 @@ def fallback_results_path(basepath, number):
                 # if entry.is_file:
                 return path
     raise FileNotFoundError("Can't find results at path {}".format(basepath))
+
+
+COLOURS = ['red',
+           'orangered',
+           'darkorange',
+           'green',
+           'blue',
+           'darkviolet',
+           'deeppink',
+           'black']
+
+
+class Calibrator:
+    def __init__(self):
+        self.calibrations = []
+        self.averaged = None
+        self.used_calibration = False
+
+    def add_focusset(self, focusset):
+        self.calibrations.append((focusset.exif, focusset.build_calibration(fstop=None, opt_freq=AUC, plot=False, writetofile=False,use_centre=False)))
+        if focusset.use_calibration:
+            self.used_calibration = True
+
+    def average_calibrations(self, absolute=False, plot=True, trim=None):
+        exifs, tups = zip(*self.calibrations)
+        datas, diffs, cals = zip(*tups)
+        data_stack = np.vstack(datas)
+        diff_stack = np.vstack(diffs)
+        if absolute:
+            stack = diff_stack - data_stack
+            invert = False
+        else:
+            stack = diff_stack / data_stack
+            invert = self.used_calibration
+
+        if trim is None:
+            trim = not self.used_calibration
+        if invert:
+            if absolute:
+                stack = - stack
+            else:
+                stack = 1 / stack
+        if trim:
+            length = int(len(self.calibrations) * 0.7)
+        else:
+            length = len(self.calibrations)
+
+        aucs = stack[:, :30].mean(axis=1)
+        sortorder = np.argsort(aucs)
+        use_order = sortorder[:length]
+
+        sortedstack = stack[use_order, :]
+
+        weights = np.linspace(1.0, 0, len(sortedstack))
+
+        averaged = np.average(sortedstack, axis=0, weights=weights)
+        sortedcallist = []
+        sortedexif = []
+        for arg in use_order:
+            sortedcallist.append(self.calibrations[arg])
+            sortedexif.append(exifs[arg])
+
+        print("Averaged {} calibrations".format(len(sortedstack)))
+        order = 0
+        colour = 0
+
+        plt.plot(RAW_SFR_FREQUENCIES[:len(averaged)], averaged, '-', label="Average", color='black')
+        for exif, line in zip(sortedexif, sortedstack):
+            # if exif.aperture != 11.0:
+            #     continue
+            color = 'grey'
+            print("Line", exif.summary)
+            print(line)
+            if exif.aperture > 5.5:
+                color = 'red'
+            if exif.aperture > 7.9:
+                color = 'green'
+            if exif.aperture > 10.9:
+                color = 'blue'
+            if exif.aperture > 15.0:
+                color = 'magenta'
+            print(exif.aperture, color)
+            color = (COLOURS*2)[colour]
+            if 1 or order:
+                plt.plot(RAW_SFR_FREQUENCIES[:len(line)], line, '-', label=exif.summary, alpha=0.6, color=color)
+                colour += 1
+            else:
+                plt.plot(RAW_SFR_FREQUENCIES[:len(line)], line, '-', label=exif.summary, alpha=0.8, color=color)
+            order = (order + 1) % 2
+        plt.legend()
+        if absolute:
+            plt.ylim(-0.15, 0.15)
+        else:
+            plt.ylim(0, 1.3)
+
+        plt.xlabel("Spatial Frequency (cy/px)")
+        plt.xlim(0, 0.5)
+        if invert:
+            plt.title("Lens MTF vs Diffraction MTF for EXIF F/ number")
+            if absolute:
+                plt.ylabel("MTF Error (Inverted)")
+            else:
+                plt.ylabel("Relative MTF")
+        else:
+            plt.title("Gain required for Lens MTF to match expected diffraction MTF from EXIF")
+            if absolute:
+                plt.ylabel("MTF Error")
+            else:
+                plt.ylabel("Gain")
+        plt.hlines([1.0], 0, 0.5, linestyles='--', alpha=0.5)
+        plt.grid()
+        plt.show()
+        self.averaged = averaged
+
+    def write_calibration(self):
+        if self.used_calibration:
+            raise ValueError("Existing calibration was used in at least one FocusSet, run without calibration")
+        with open("calibration.csv", 'w') as csvfile:
+            csvwriter = csv.writer(csvfile, delimiter=',', quotechar='|')
+            csvwriter.writerow(list(RAW_SFR_FREQUENCIES[:len(self.averaged)]))
+            csvwriter.writerow(list(self.averaged))
+            print("Calibration written!")
