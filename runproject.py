@@ -9,9 +9,9 @@ from lentil.plot_utils import COLOURS
 BASE_PATH = "/home/sam/nashome/MTFMapper Stuff/"
 
 PATHS = [
-    # "Bernard/",
+    "Bernard/",
 
-    # "56mm/f1.2/",
+    "56mm/f1.2/",
     "56mm/f2.8/",
     "56mm/f5.6/",
     "56mm/f8/",
@@ -19,35 +19,35 @@ PATHS = [
     # '16-55mm/16mm f2.8/',
     # '16-55mm/16mm f5.6/',
 
-    # '16mm/f1.4/',
-    # '16mm/f2/',
-    # '16mm/f2.8/',
-    # '16mm/f4/',
-    # '16mm/f5.6/',
+    '16mm/f1.4/',
+    '16mm/f2/',
+    '16mm/f2.8/',
+    '16mm/f4/',
+    '16mm/f5.6/',
     '16mm/f8/',
-    # '16mm/f11/',
+    '16mm/f11/',
 
     # '16-55mm/16mm/f2.8/',
-    '16-55mm/16mm/f4fine/',
-    '16-55mm/16mm/f5.6/',
-    '16-55mm/16mm/f8/',
-    '16-55mm/16mm/f11/',
+    # '16-55mm/16mm/f4fine/',
+    # '16-55mm/16mm/f5.6/',
+    # '16-55mm/16mm/f8/',
+    # '16-55mm/16mm/f11/',
     #
-    # '16-55mm/18mm/f2.8/',
-    # '16-55mm/18mm/f4/',
-    # '16-55mm/18mm/f5.6/',
-    # '16-55mm/18mm/f8/',
-    # '16-55mm/18mm/f11/',
+    '16-55mm/18mm/f2.8/',
+    '16-55mm/18mm/f4/',
+    '16-55mm/18mm/f5.6/',
+    '16-55mm/18mm/f8/',
+    '16-55mm/18mm/f11/',
     #
 
-    # '16-55mm/27mm/f2.8/',
-    # '16-55mm/27mm/f4/',
-    # '16-55mm/27mm/f5.6/',
-    # '16-55mm/27mm/f8/',
+    '16-55mm/27mm/f2.8/',
+    '16-55mm/27mm/f4/',
+    '16-55mm/27mm/f5.6/',
+    '16-55mm/27mm/f8/',
 
-    # "16-55mm/55mm/f2.8/",
+    "16-55mm/55mm/f2.8/",
     "16-55mm/55mm/f4/",
-    # "16-55mm/55mm/f5.6/",
+    "16-55mm/55mm/f5.6/",
     "16-55mm/55mm/f8/",
     "16-55mm/55mm/f11/",
 
@@ -56,47 +56,47 @@ PATHS = [
     # "55-200mm/55mm/f8/",
     # "55-200mm/55mm/f11/",
 
-    # "55-200mm/95mm/f4/",
-    # "55-200mm/95mm/f5.6/",
-    # "55-200mm/95mm/f8/",
-    # "55-200mm/95mm/f11/",
+    "55-200mm/95mm/f4/",
+    "55-200mm/95mm/f5.6/",
+    "55-200mm/95mm/f8/",
+    "55-200mm/95mm/f11/",
 
-    # "55-200mm/200mm/f4.8/",
-    # "55-200mm/200mm/f5.6/",
-    # "55-200mm/200mm/f8/",
-    # "55-200mm/200mm/f11/",
-    # "55-200mm/200mm/f16/",
+    "55-200mm/200mm/f4.8/",
+    "55-200mm/200mm/f5.6/",
+    "55-200mm/200mm/f8/",
+    "55-200mm/200mm/f11/",
+    "55-200mm/200mm/f16/",
 
-    # "100-400mm/100mm/f4.5/",
+    "100-400mm/100mm/f4.5/",
     "100-400mm/100mm/f5.6/",
     "100-400mm/100mm/f8/",
 
-    # "100-400mm/230mm/f5b/",
-    # "100-400mm/230mm/f5.6b/",
-    # "100-400mm/230mm/f6.3b/",
-    # "100-400mm/230mm/f7.1b/",
-    # "100-400mm/230mm/f8/",
+    "100-400mm/230mm/f5b/",
+    "100-400mm/230mm/f5.6b/",
+    "100-400mm/230mm/f6.3b/",
+    "100-400mm/230mm/f7.1b/",
+    "100-400mm/230mm/f8/",
     "100-400mm/230mm/f8b/",
     "100-400mm/230mm/f11b/",
-    # "100-400mm/230mm/f16/",
+    "100-400mm/230mm/f16/",
 
-    # "60mm/f2.4/",
+    "60mm/f2.4/",
     "60mm/f4/",
     "60mm/f5.6/",
     "60mm/f8/delay/",
     "60mm/f11/",
     #
-    # "90mm/f2/",
-    # "90mm/f2.8/",
-    # "90mm/f4/",
+    "90mm/f2/",
+    "90mm/f2.8/",
+    "90mm/f4/",
     "90mm/f5.6/",
     "90mm/f8/",
     "90mm/f11/",
     "90mm/f16/",
     #
-    # "18-55mm/55mm/f4/",
-    # "18-55mm/55mm/f5.6/",
-    # "18-55mm/55mm/f8/",
+    "18-55mm/55mm/f4/",
+    "18-55mm/55mm/f5.6/",
+    "18-55mm/55mm/f8/",
     # "18-55mm/55mm/f11/",
     # '23mm f1.4/',
 ]
@@ -125,13 +125,27 @@ fns = {}
 freq = 0.28
 calibrator = Calibrator()
 for nheight, path in enumerate(PATHS[:]):
-    if "56mm" in path and "f2" in path:
-        focusset = FocusSet(fallback_results_path(os.path.join(BASE_PATH, path), 3), include_all=0, use_calibration=1)
+    if "56mm/" in path and "f2" in path:
+        focusset = FocusSet(fallback_results_path(os.path.join(BASE_PATH, path), 3), include_all=1, use_calibration=1)
+        # focusset.remove_duplicated_fields()
+        # focusset.exif.focal_length = 45
+        # focusset.exif.aperture = 1.8
+        # focusset.find_focus_spacing()
+        # focusset.attempt_to_calibrate_focus(unit=None)
+        focusset.attempt_to_calibrate_focus(unit=FOCUS_SCALE_COC_PIXELS, posh=True, plot=True)
+        # exit()
+        focusset.plot_ideal_focus_field(axis=ALL_THREE_AXES, fix_zlim=(-5,5))
+        # for x in np.linspace(0, IMAGE_WIDTH, 20):
+        #     focusset.find_best_focus(x, x*2/3, AUC, MERIDIONAL, plot=1)
+        #     focusset.find_best_focus(x, x*2/3, AUC, SAGITTAL, plot=1)
+        # focusset.plot_ideal_focus_field()
+        # focusset.find_best_focus(323.364411, 3957.360777, AUC, MERIDIONAL, plot=True)
+        # exit()
         # calibrator.add_focusset(focusset)
-        focusset.estimate_wavefront_error(max_fnumber_error=0.0)
+        # focusset.estimate_wavefront_error(max_fnumber_error=0.0)
     # focusset = FocusSet(os.path.join(BASE_PATH, path), include_all=1, use_calibration=1)
-    # focusset.exif.focal_length = 45
-    # focusset.exif.aperture = 1.8
+    # focusset.attempt_to_calibrate_focus()
+    exit()
     # focusset.build_calibration(writetofile=1)
     # print(focusset.fields[0].points[0].calibration)
     # focusset.estimate_wavefront_error()
@@ -203,7 +217,7 @@ for nheight, path in enumerate(PATHS[:]):
     # focusset.find_best_focus(5688.378935, 3939.958362, 0.3, MERIDIONAL, plot=True)
 # plt.plot(apertures, sharps, color=COLOURS[0], label="0.08 cy/px")
 # plt.plot(apertures, sharps, '.')
-calibrator.average_calibrations()
+# calibrator.average_calibrations()
 # calibrator.write_calibration()
 exit()
 print(fns)

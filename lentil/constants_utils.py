@@ -4,6 +4,7 @@ import logging
 import numpy as np
 from scipy import interpolate
 import  matplotlib.pyplot as plt
+import prysm
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
@@ -19,11 +20,12 @@ SAGITTAL = "SAGITTAL"
 MERIDIONAL = "MERIDIONAL"
 MEDIAL = "MEDIAL"
 BOTH_AXES = "BOTH"
+ALL_THREE_AXES = "ALL THREE AXES"
 
 PLOT_ON_FIT_ERROR = True
 PLOT_MTF50_ERROR = True
 
-TRUNCATE_MTF_LOBES = True
+TRUNCATE_MTF_LOBES = False
 
 SFR_HEADER = [
     'blockid',
@@ -33,17 +35,17 @@ SFR_HEADER = [
     'radialangle'
 ]
 
-FIELD_SMOOTHING_MIN_POINTS = 54
+FIELD_SMOOTHING_MIN_POINTS = 24
 FIELD_SMOOTHING_MAX_RATIO = 0.3
-FIELD_SMOOTHING_ORDER = 2
+FIELD_SMOOTHING_ORDER = 3
 
 LOW_BENCHMARK_FSTOP = 22
 HIGH_BENCHBARK_FSTOP = 4
 # LOW_BENCHMARK_FSTOP = 32
 # HIGH_BENCHBARK_FSTOP = 13
 
-IMAGE_WIDTH = 6000
 # IMAGE_WIDTH = 8256
+IMAGE_WIDTH = 6000
 # SENSOR_WIDTH = 0.0357
 SENSOR_WIDTH = 0.0236
 
@@ -55,11 +57,14 @@ DEFAULT_PIXEL_SIZE = SENSOR_WIDTH / IMAGE_WIDTH
 THETA_BOTTOM_RIGHT = np.arctan(IMAGE_HEIGHT / IMAGE_WIDTH)
 THETA_TOP_RIGHT = np.pi * 2.0 - THETA_BOTTOM_RIGHT
 
-# CHART_WIDTH = 18*0.0254
-CHART_WIDTH = 1.188
+CHART_WIDTH = 18 * 0.0254
+# CHART_WIDTH = SENSOR_WIDTH * 33
 CHART_DIAGONAL = (CHART_WIDTH ** 2 + (CHART_WIDTH * IMAGE_HEIGHT / IMAGE_WIDTH)**2) ** 0.5
 
 DEFAULT_SENSOR_DIAGONAL = IMAGE_DIAGONAL * DEFAULT_PIXEL_SIZE
+
+# LOWAVG_NOMBINS = np.arange(2, 6)
+LOWAVG_NOMBINS = np.arange(3, 12)
 
 ACUTANCE_PRINT_HEIGHT = 0.6
 ACUTANCE_VIEWING_DISTANCE = 0.74
@@ -202,9 +207,32 @@ def twogauss(gaussx, a, b, c, peaky):
     both = (wide + narrow) * a
     return both
 
+count=0
 
 def cauchy(xin, max, x0, gamma):
+    global count
+    count += 1
+    # print(count)
+    # print(xin)
     return max / (1.0 + ((xin - x0) / gamma) ** 2)
+def c_init(x, y, inc):
+    return y, x, 3.0 * inc
+def c_bounds(x, y, inc):
+    return ((y * 0.98, x - inc * 2, 0.4 * inc,),
+            (y * 1.15, x + inc * 2, 100.0 * inc,))
+cauchy.initial = c_init
+cauchy.bounds = c_bounds
+
+def psysmfit(defocus, defocus_offset, aberr):
+    pupil = NollZernike(Z4=defocus + defocus_offset, dia=10, norm=True, **{zedstr: add}, wavelength=wl,
+                        opd_unit="um")
+    m = MTF.from_pupil(pupil, efl=fl)
+    if 0:
+        plt.plot(freqs, m.exact_xy(freqs))
+
+
+# cauchy.bounds = lambda x, y, inc: (highest_data_y * 0.98, mean_peak_x - x_inc * 2, 0.4 * x_inc,), \
+#                                     (highest_data_y * 1.15, mean_peak_x + x_inc * 2, 100.0 * x_inc,)
 
 
 class EXIF:
@@ -307,6 +335,8 @@ def fallback_results_path(basepath, number):
             for entry in os.scandir(path):
                 # if entry.is_file:
                 return path
+    if os.path.exists(basepath):
+        return basepath
     raise FileNotFoundError("Can't find results at path {}".format(basepath))
 
 
@@ -332,6 +362,8 @@ class Calibrator:
             self.used_calibration = True
 
     def average_calibrations(self, absolute=False, plot=True, trim=None):
+        if len(self.calibrations) == 0:
+            raise ValueError("No Calibrations!")
         exifs, tups = zip(*self.calibrations)
         datas, diffs, cals = zip(*tups)
         data_stack = np.vstack(datas)

@@ -16,26 +16,27 @@ from lentil.constants_utils import *
 
 plt.style.use('bmh')
 freqs = np.arange(0.0, 0.5, 1/64) * 250
-for z in [0,4,11,22, 37, -1]:
-# for z in range(30,50):
-    add = {0:0, 4:0.21, 5:0.4, 11:0.2, 22:0.2, 36:0.2, -1:0}
-    if z == 0:
-        pupil = NollZernike(dia=10, norm=True, wavelength=0.55, opd_unit="um")
-    elif z == -1:
-        pupil = NollZernike(dia=10, norm=True, wavelength=0.55*3.7, opd_unit="um")
-    else:
-        pupil = NollZernike(dia=10, norm=False, wavelength=0.55, opd_unit="waves", **{"Z{}".format(z): 0.4})
-    m = MTF.from_pupil(pupil, efl=10*2.8)
-    # sharp = np.mean(m.exact_xy(freqs))
-    # pupil.plot2d()
-    # plt.show()
-    print(z)
-    plt.plot(freqs / 250, m.exact_xy(freqs), label="Z{:.0f}".format(z))
-plt.ylim(0,1)
-plt.xlim(0,0.5)
-plt.legend()
-plt.show()
-exit()
+if 0:
+    for z in [0,4,11,22, 37, -1]:
+    # for z in range(30,50):
+        add = {0:0, 4:0.21, 5:0.4, 11:0.2, 22:0.2, 36:0.2, -1:0}
+        if z == 0:
+            pupil = NollZernike(dia=10, norm=True, wavelength=0.55, opd_unit="um")
+        elif z == -1:
+            pupil = NollZernike(dia=10, norm=True, wavelength=0.55*3.7, opd_unit="um")
+        else:
+            pupil = NollZernike(dia=10, norm=False, wavelength=0.55, opd_unit="waves", **{"Z{}".format(z): 0.4})
+        m = MTF.from_pupil(pupil, efl=10*2.8)
+        # sharp = np.mean(m.exact_xy(freqs))
+        # pupil.plot2d()
+        # plt.show()
+        print(z)
+        plt.plot(freqs / 250, m.exact_xy(freqs), label="Z{:.0f}".format(z))
+    plt.ylim(0,1)
+    plt.xlim(0,0.5)
+    plt.legend()
+    plt.show()
+    exit()
 # m = MTF.from_pupil(pupil, efl=80)
 # plt.plot(freqs, m.exact_xy(freqs))
 # plt.ylim(0, 1)
@@ -53,16 +54,21 @@ defocus_ar = np.linspace(-1.5, 1.5, 21)
 model_step_size = defocus_ar[1] - defocus_ar[0]
 print("Defocus step size {:.3f}".format(model_step_size))
 # for zed in range(9,11   ):
-zed = 11
+freqs = np.arange(2, 6, 1) / 64 * 250
+freqs = np.arange(0, 32, 1) / 64 * 250
+# freqs2 = np.arange(2, 30, 1) / 64 * 250
+print(freqs)
+zed = 22
 fl = 100
 fstop = 2.8
-wl = 0.55
+wl = 0.575
 normterms = []
-addaberrs = np.linspace(0, 0.3, 10)
-offsets = [10, 0.2, 0.1, 0.0, -0.1, -0.2, -0.3,]
+addaberrs = np.linspace(0.0, 0.3, 7)
+# offsets = [10, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0,]
+offsets = [0.2]
+zs = [11]
 # offsets = [0.0]
-for offset in offsets:
-    offset = offset / 2
+for zed in zs:
     spacingresults = []
     peak_ys = []
     mtfs = []
@@ -72,9 +78,10 @@ for offset in offsets:
         if zed == 4:
             continue
         mtf_ar = []
+        mtf_ar2 = []
         peak = 0
         for nd, z4defocus in enumerate(defocus_ar):
-            pupil = NollZernike(Z4=z4defocus*wl + add*2.0, dia=fl/fstop, norm=True, **{zedstr:add}, wavelength=wl, opd_unit="um")
+            pupil = NollZernike(Z4=(z4defocus*wl + add/2), dia=fl/fstop, **{zedstr:add}, norm=True, wavelength=wl, opd_unit="um")
             # pupil.plot2d()
             # plt.show()
             # print(pupil.strehl)
@@ -107,10 +114,12 @@ for offset in offsets:
             # mtf_ar.append(sharp)
 
             sharp = np.mean(m.exact_xy(freqs))
+            # sharp2 = np.mean(m.exact_xy(freqs2))
             # plt.plot(freqs, m.exact_xy(freqs))
             # plt.show()
             mtf_ar.append(sharp)
-            # sharp = np.mean(m.exact_xy([10]))
+            # mtf_ar2.append(sharp2)
+            sharp = np.mean(m.exact_xy([10]))
             if sharp > peak:
                 peak = sharp
             # print("MTF {:.3f}".format(sharp))
@@ -126,16 +135,21 @@ for offset in offsets:
         exif.focal_length = 28.0
         focusset.exif = exif
         posob = lambda x: 0
+
+        # posob.focus_data = np.arange(len(mtf_ar2))
+        # posob.sharp_data = np.array(mtf_ar2)
+        # posob.interpfn = interpolate.InterpolatedUnivariateSpline(posob.focus_data, mtf_ar2, k=2)
+        # ob = focusset.find_best_focus(0, 0, _pos=posob, plot=0)
+        # print(ob.sharp)
+        # continue
         posob.focus_data = np.arange(len(mtf_ar))
         posob.sharp_data = np.array(mtf_ar)
-        print(mtf_ar)
         posob.interpfn = interpolate.InterpolatedUnivariateSpline(posob.focus_data, mtf_ar, k=2)
-        # print(posob.focus_data, mtf_ar)
-        # focusset.find_best_focus(0, 0, _pos=posob, plot=1)
         # continue
         est_defocus_rms_wfe_step, longitude_defocus_step_um, coc_step, image_distance, subject_distance, peak_y = \
-            focusset.find_best_focus(0, 0, _pos=posob, plot=0, _return_step_data_only=True, _step_est_offset=offset)
-        spacingresults.append(est_defocus_rms_wfe_step)
+            focusset.find_best_focus(0, 0, _pos=posob, plot=0, _return_step_data_only=True, _step_est_offset=0.1)
+        # est_defocus_rms_wfe_step, longitude_defocus_step_um, coc_step, image_distance, subject_distance, peak_y = focusset.find_focus_spacing(mtf_ar)
+        spacingresults.append(est_defocus_rms_wfe_step)  # / (1.0 - (1.0 - ob.sharp)**4*0.8))
         # peak_ys.append(peak_y)
 
         # plt.plot(defocus_ar, mtf_ar, label="{} {:.2f}".format(zedstr, add))
@@ -146,12 +160,16 @@ for offset in offsets:
     print(spacingresults)
 
     normterms.append(spacingresults[0] / model_step_size)
-    spacingresults_norm = np.array(spacingresults)  / spacingresults[np.argmax(addaberrs == 0)]
-
-    if offset > 3:
-        plt.plot(addaberrs, (spacingresults_norm - 1) * 100, label="No Correction".format(offset))
+    if 0 and "NORM":
+        spacingresults_norm = np.array(spacingresults)  / spacingresults[np.argmax(addaberrs == 0)]
     else:
-        plt.plot(addaberrs, (spacingresults_norm - 1) * 100, label="Correction {:.2f}".format(offset))
+        spacingresults_norm = spacingresults / model_step_size
+
+    if 0 and offset > 3:
+        plt.plot(addaberrs, (spacingresults_norm - 1) * 100, label="Z{".format(offset))
+    else:
+        plt.plot(addaberrs, (spacingresults_norm - 1) * 100, label="Z {:.0f}".format(zed))
+    print("Correction should be {:.5f}".format(model_step_size / spacingresults[0]))
 # plt.plot(addaberrs, spacingresults / model_step_size)
 # plt.plot(addaberrs, peak_ys)
 print(offsets)

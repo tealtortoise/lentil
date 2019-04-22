@@ -183,24 +183,11 @@ class SFRField():
         x_distances = (x_arr - x)
         y_distances = (y_arr - y)
 
-
-
-        # Determine scatter of these points
-        # x_distance_rms = np.sqrt((x_distances ** 2).mean())# * self.smoothing
-        # y_distance_rms = np.sqrt((y_distances ** 2).mean())# * self.smoothing
-
-        # Calculate distance in 2d plane
-        # distances = np.sqrt((x_distances / x_distance_rms) ** 2 + (y_distances / y_distance_rms) ** 2)
         distances = np.sqrt((x_distances) ** 2 + (y_distances) ** 2)
 
-        # stack = np.stack((x_arr, y_arr, z_arr, x_distances, y_distances, distances, angles*180/np.pi), axis=0)
         stack = np.vstack((x_arr, y_arr, z_arr, x_distances, y_distances, distances))
 
-
         bbox = [0, IMAGE_WIDTH, 0, IMAGE_HEIGHT]
-
-        # nr = weights > (weights.max() * 1.1)  # Is point nearby?
-        # print(is_point_nearby.sum(), len(weights))
 
         order = FIELD_SMOOTHING_ORDER  # Spline order
 

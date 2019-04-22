@@ -154,7 +154,7 @@ class SFRPoint:
         return lentil.constants_utils.SAGITTAL
 
     def get_lowavg(self):
-        desired_lp_mm = np.array([1,2,3, 4]) / 64 * 250
+        desired_lp_mm = np.array(LOWAVG_NOMBINS) / 64 * 250
         actual_cy_px = desired_lp_mm * self.pixelsize * 1e3
         # print(actual_cy_px);exit()
         fn = self.interpolate_fn

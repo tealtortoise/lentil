@@ -199,7 +199,7 @@ class FocusSet:
 
     def plot_ideal_focus_field(self, freq=AUC, detail=1.0, axis=MEDIAL, plot_curvature=True,
                                plot_type=PROJECTION3D, show=True, ax=None, skewplane=False,
-                               alpha=0.7, title=None):
+                               alpha=0.7, title=None, fix_zlim=None):
         """
         Plots peak sharpness / curvature at each point in field across all focus
 
@@ -216,6 +216,15 @@ class FocusSet:
         :return: matplotlib axis for reuse, skewplane for reuse
         """
 
+        if axis == ALL_THREE_AXES:
+            if not plot_curvature or plot_type is not PROJECTION3D:
+                raise ValueError("Plot must be field curvature in 3d for ALL THREE AXES")
+            ax, skew = self.plot_ideal_focus_field(freq, detail, MERIDIONAL, show=False, skewplane=skewplane,
+                                                   alpha=alpha*0.3)
+            ax, skew = self.plot_ideal_focus_field(freq, detail, SAGITTAL, show=False, ax=ax, skewplane=skew, alpha=alpha*0.3)
+            return self.plot_ideal_focus_field(freq, detail, MEDIAL, show=show, ax=ax, skewplane=skew, alpha=alpha, fix_zlim=fix_zlim)
+
+
         num_sheets = 0  # Number of acceptable focus sheets each side of peak focus
         if title is None:
             title = "Ideal focus field " + self.exif.summary
@@ -231,7 +240,8 @@ class FocusSet:
         locs = 1
 
         for x_idx, y_idx, x, y in gridit:
-            print("Finding best focus for location {} / {}".format(locs, tot_locs))
+            if locs % 50 == 0:
+                print("Finding best focus for location {} / {}".format(locs, tot_locs))
             locs += 1
             bestfocus = self.find_best_focus(x, y, freq, axis)
 
@@ -290,6 +300,18 @@ class FocusSet:
             plot.zdata = focus_posits
             plot.wdata = sharps
             plot.alpha = alpha
+            # print(focus_posits.min(), focus_posits.max())
+            if fix_zlim is not None:
+                plot.zmin = fix_zlim[0]
+                plot.zmax = fix_zlim[1]
+            else:
+                if ax is not None:
+                    # print(ax.get_zlim())
+                    plot.zmin = min(focus_posits.min(), ax.get_zlim()[0])
+                    plot.zmax = max(focus_posits.max(), ax.get_zlim()[1])
+                else:
+                    plot.zmin = focus_posits.min()
+                    plot.zmax = focus_posits.max()
             ax = plot.projection3d(ax, show=show)
         return ax, skewplane
 
@@ -318,16 +340,16 @@ class FocusSet:
         plot.title = "Edge SFR vs focus position for varying height from centre"
         plot.contour2d()
 
-    def get_interpolation_fn_at_point(self, x, y, freq=DEFAULT_FREQ, axis=MEDIAL, limit=None, order=2):
+    def get_interpolation_fn_at_point(self, x, y, freq=DEFAULT_FREQ, axis=MEDIAL, limit=None, skip=1, order=2):
         y_values = []
         if limit is None:
             lowlim = 0
             highlim = len(self.fields)
-            fields = self.fields
+            fields = self.fields[::skip]
         else:
             lowlim = max(0, limit[0])
             highlim = min(len(self.fields), max(limit[1], lowlim + 3))
-            fields = self.fields[lowlim: highlim]
+            fields = self.fields[lowlim: highlim:skip]
 
         if axis == MEDIAL:
             for field in fields:
@@ -338,7 +360,7 @@ class FocusSet:
             for n, field in enumerate(fields):
                 y_values.append(field.interpolate_value(x, y, freq, axis))
         y_values = np.array(y_values)
-        x_ixs = np.arange(lowlim, highlim, 1)  # Arbitrary focus units
+        x_ixs = np.arange(lowlim, highlim, skip)  # Arbitrary focus units
         x_values = self.focus_data[x_ixs]
         interpfn = interpolate.InterpolatedUnivariateSpline(x_values, y_values, k=order)
         pos = FocusOb(interpfn=interpfn)
@@ -346,8 +368,291 @@ class FocusSet:
         pos.sharp_data = y_values
         return pos
 
+    def find_focus_spacing(self, plot=True):
+        # data = np.array(data)
+        # plot = FieldPlot()
+        # plot.zdata = data
+        # plot.xticks = np.linspace(0,1, data.shape[0])
+        # plot.yticks = np.linspace(0,1, data.shape[1])
+        # plot.smooth2d(show=1)
+        freqs = np.arange(3, 32, 1) / 64
+
+        use_minimize = True
+
+        pos = self.get_interpolation_fn_at_point(IMAGE_WIDTH/2, IMAGE_HEIGHT/2, AUC, SAGITTAL)
+        focus_values = pos.focus_data[:]
+
+        mtf_means = pos.sharp_data
+        # chart_mtf_values = mtf_means
+        # data = np.array(data)
+        if 0 and plot:
+            plot = FieldPlot()
+            plot.zdata = chart_mtf_values
+            plot.xticks = np.linspace(0,1, chart_mtf_values.shape[0])
+            plot.yticks = np.linspace(0,1, chart_mtf_values.shape[1])
+            plot.smooth2d(show=1)
+
+        meanpeak_idx = np.argmax(mtf_means)
+        meanpeak_pos = focus_values[meanpeak_idx]
+        meanpeak = mtf_means[meanpeak_idx]
+        # highest_data_y = y_values[highest_data_x_idx]
+
+        # print(highest_data_x_idx)
+
+        if meanpeak_idx > 0:
+            x_inc = focus_values[meanpeak_idx] - focus_values[meanpeak_idx-1]
+        else:
+            x_inc = focus_values[meanpeak_idx+1] - focus_values[meanpeak_idx]
+
+        # y_values = np.cos(np.linspace(-6, 6, len(focus_values))) + 1
+        absgrad = np.abs(np.gradient(mtf_means)) / meanpeak
+        gradsum = np.cumsum(absgrad)
+        distances_from_peak = np.abs(gradsum - np.mean(gradsum[meanpeak_idx:meanpeak_idx+1]))
+        shifted_distances = interpolate.InterpolatedUnivariateSpline(focus_values, distances_from_peak, k=1)(focus_values - x_inc*0.5)
+        weights = np.clip(1.0 - shifted_distances * 1.3 , 1e-1, 1.0) ** 5
+
+        if 0 and "DEBUGPLOT":
+            print(absgrad)
+            print(gradsum)
+            print(distances_from_peak)
+            plt.plot(mtf_means, label="yvals")
+            plt.plot(absgrad, label="grad")
+            plt.plot(gradsum, label="gradsum")
+            plt.plot(distances_from_peak, label="distfrompeak")
+            plt.plot(shifted_distances, label="distfrompeakshift")
+            plt.plot(weights, label="weights")
+            plt.legend()
+            plt.show()
+            exit()
+
+        fitfn = cauchy
+
+        bounds = fitfn.bounds(meanpeak_pos, meanpeak, x_inc)
+
+        sigmas = 1. / weights
+        initial = fitfn.initial(meanpeak_pos, meanpeak, x_inc)
+        fitted_params, _ = optimize.curve_fit(fitfn, focus_values, mtf_means,
+                                              bounds=bounds, sigma=sigmas, ftol=1e-5, xtol=1e-5,
+                                              p0=initial)
+        cauchy_peak_x = fitted_params[1]
+        cauchy_peak_y = fitted_params[0]
+        print("Found peak {:.3f} at {:.3f}".format(cauchy_peak_y, cauchy_peak_x))
+
+        # Move on to get full frequency data
+
+        size = 2
+        skip = 3
+        slicelow = max(0, int(cauchy_peak_x) - size*skip)
+        slicehigh = slicelow + size * skip * 2 + 1
+        limit = (slicelow, slicehigh)
+        print("Limit", limit)
+        datalst = []
+        for freq in freqs:
+            pos = self.get_interpolation_fn_at_point(IMAGE_WIDTH/2, IMAGE_HEIGHT/2, freq, SAGITTAL, limit=limit, skip=skip)
+            pos1 = self.get_interpolation_fn_at_point(IMAGE_WIDTH/2, IMAGE_HEIGHT/2, freq, MERIDIONAL, limit=limit, skip=skip)
+            datalst.append((pos.sharp_data[:] + pos1.sharp_data)*0.5)
+
+        chart_mtf_values = np.array(datalst) # [:,::skip]
+        mtf_means = chart_mtf_values.mean(axis=0)# [::skip]
+        focus_values = pos.focus_data # [::skip]
+        max_pos = focus_values[np.argmax(mtf_means)]
+
+        count = 0
+        weights = (chart_mtf_values + 20.001) ** 1
+
+        def prysmfit(*params, plot=False):
+            if len(params) == 1:
+                p = []
+                for param in params[0]:
+                    p.append(param)
+                while len(p) < 6:
+                    p.append(0)
+                defocus_offset, defocus_step, aberr, a2 , loca, spca , z37 = p
+            else:
+                p = []
+                for param in params:
+                    p.append(param)
+                while len(p) < 6:
+                    p.append(0)
+                _, defocus_offset, defocus_step, aberr, a2, loca, spca, z37 = p
+
+            z11 = aberr# * (1.0 - a2)
+            z22 = a2
+            out = []
+            basewv = 0.575
+            for n, defocus in enumerate(focus_values):
+                mul = 1
+                pupil = prysm.NollZernike(Z4=((defocus - defocus_offset) * defocus_step*mul - loca)*basewv,
+                                          dia=10, norm=True,
+                                          z11=(z11*mul - spca)*basewv,
+                                          z22=(z22*mul)*basewv,
+                                          z37=(z37*mul)*basewv,
+                                          wavelength=0.656,
+                                          opd_unit="um",
+                                          samples=128)
+                pupil2 = prysm.NollZernike(Z4=((defocus - defocus_offset) * defocus_step*mul - loca)*basewv,
+                                          dia=10, norm=True,
+                                          z11=(z11*mul - spca)*basewv,
+                                          z22=(z22*mul)*basewv,
+                                          z37=(z37*mul)*basewv,
+                                          wavelength=0.486,
+                                          opd_unit="um",
+                                          samples=128)
+                pupil3 = prysm.NollZernike(Z4=((defocus - defocus_offset) * defocus_step*mul)*basewv,
+                                          dia=10, norm=True,
+                                          z11=(z11*mul)*basewv,
+                                          z22=(z22*mul)*basewv,
+                                          z37=(z37*mul)*basewv,
+                                          wavelength=0.546,
+                                          opd_unit="um",
+                                          samples=128)
+                pupilall = (pupil+pupil+pupil2+ pupil3 + pupil3+pupil3)
+
+                if plot and defocus == max_pos:
+                    pupilall.plot2d()
+                    plt.show()
+                    print(pupilall.slice_x[1])
+                    print(pupilall.slice_x[1])
+                    plt.plot(np.diff(pupilall.slice_x[1]))
+                    plt.show()
+
+                # prysm.PSF.from_pupil(pupil, efl=10*self.exif.aperture).plot2d()
+                # plt.show()
+                # m = prysm.MTF.from_pupil(pupil, efl=self.exif.aperture * 10)
+                # out.append(m.exact_sag(freqs / DEFAULT_PIXEL_SIZE * 1e-3))
+                m = prysm.MTF.from_pupil(pupil, efl=self.exif.aperture * 10)
+                a1 = m.exact_sag(freqs / DEFAULT_PIXEL_SIZE * 1e-3)
+                m = prysm.MTF.from_pupil(pupil2, efl=self.exif.aperture * 10)
+                a2 = m.exact_sag(freqs / DEFAULT_PIXEL_SIZE * 1e-3)
+                m = prysm.MTF.from_pupil(pupil3, efl=self.exif.aperture * 10)
+                a3 = m.exact_sag(freqs / DEFAULT_PIXEL_SIZE * 1e-3)
+                out.append((a1 * 2 + a2 + a3 * 3) / 6)
+            model_mtf_values = np.array(out).T
+            if plot:
+                # pass
+                # pupil.plot2d()
+                # plt.show()
+                # plt.plot(model_mtf_values.flatten(), label="Prysm Model {:.3f}λ Z4 step size, {:.3f}λ Z11".format(defocus_step, aberr))
+                plt.plot(model_mtf_values.flatten(), label="Prysm Model {:.3f}λ Z4 step size, {:.3f}λ Z11, {:.3f}λ Z22".format(defocus_step, z11, z22))
+                plt.plot(chart_mtf_values.flatten(), label="MTF Mapper data")
+                plt.xlabel("Focus position (arbitrary units)")
+                plt.ylabel("MTF")
+                plt.title("Prysm model vs chart ({:.32}-{:.2f}cy/px AUC) {}".format(LOWAVG_NOMBINS[0] / 64, LOWAVG_NOMBINS[-1] / 64, self.exif.summary))
+                plt.ylim(0, 1)
+                plt.legend()
+                plt.show()
+            global count
+            count += 1
+            # print("count", count)
+            cost = np.sum((model_mtf_values - chart_mtf_values) ** 2 * weights) * 1e0
+            print("Cost {:.0f}: {:.1f} (offset {:.1f}, Z4 step {:.3f}, Z11 {:.3f}, Z22 {:.3f}, Z37 {:.3f}, LoCA{:.3f} SpCA {:.3f}".format(count, cost, defocus_offset, defocus_step, z11, z22, z37, loca, spca))
+            if len(params) > 1:
+                return model_mtf_values.flatten()
+
+
+            if plot or count % 1000 == 0:
+                if 0:
+                    plt.plot(focus_values, out, color="red", label="Model")
+                    plt.plot(focus_values, mtf_means, color="green", label="Chart")
+                else:
+
+                    for n, (freq, model, chart) in enumerate(zip(freqs, model_mtf_values, chart_mtf_values)):
+                        # print(model)
+                        # print(chart)
+                        color = COLOURS[n % 8]
+                        plt.plot(focus_values, model, '--', label="Model", color=color)
+                        plt.plot(focus_values, chart, '-', label="Chart", color=color )
+                plt.show()
+
+            # print(params)
+            # print(meansquare)
+            # print(model_mtf_values - chart_mtf_values)
+            return cost
+
+        initial = (cauchy_peak_x, 0.15, 0.0, 0.0, 0.0, 0.0, 0.0)
+        # initial = [1.60397130e+01, 1.55009658e-01, 1.09410582e-02, 5.32265328e-02]
+        # initial = [15.52297645,  0.1583259 ,  0.09895199,  0.02686031,  0.17051755,
+        # 0.11403228, -0.01808591]
+        """90 mm [ 1.59369683e+01,  1.32080098e-01,  1.13042016e-02,  4.40596034e-02,
+        1.43557853e-02,  9.39752958e-03, -3.77584896e-02]"""
+        """ 90mm Cost 296: 5.8 (offset 15.9, Z4 step 0.132, Z11 0.011, Z22 0.044 LoCA0.014 SpCA 0.009 Z37 -0.038"""
+        """60mm f2.4   1.13582531e-01  1.22821521e-01  1.20100764e-01             nan]
+Cost 377: 5.6 (offset 6.8, Z4 step 0.052, Z11 0.018, Z22 0.040 LoCA0.006 SpCA -0.019 Z37 -0.052"""
+        "95mm f5.6  widefocus Cost 688: 0.9 (offset 5.5, Z4 step 0.055, Z11 -0.058, Z22 0.008, Z37 -0.004, LoCA0.063 SpCA -0.025"
+
+        """200mm f5/6 [ 6.73759172e+00,  5.51791026e-02, -3.32219646e-02,  5.16100558e-03,
+       -7.30845229e-02,  2.46997798e-02,  3.56122742e-03]"""
+        bounds = ((-3, max(focus_values)+3), (0.03, 1.0), (-0.5, 0.5), (0.0, 1.0), (-0.4, 0.4), (-0.4, 0.4),  (-0.4, 0.4))
+        bounds = ((-3, max(focus_values)+3), (0.03, 1.0), (-0.5, 0.5), (-0.5, 0.5), (-0.4, 0.4), (-0.4, 0.4), (-0.4, 0.4))
+        curve_fit_bounds = [], []
+        for tup in bounds:
+            curve_fit_bounds[0].append(tup[0])
+            curve_fit_bounds[1].append(tup[1])
+        if 0:
+            initial = initial[:4]
+            bounds = bounds[:4]
+        s = np.array([1.61411274e+01, 1.53759443e-01, 4.44602888e-03, 7.74675870e-02])
+        # prysmfit(0, *initial, plot=1)
+        if 1:
+            # opt = optimize.minimize(prysmfit, initial, method="trust-constr", bounds=bounds)
+            opt = optimize.minimize(prysmfit, initial, method="L-BFGS-B" , bounds=bounds)
+            print(opt)
+            print(opt.x)
+            prysmfit(opt.x, plot=True)
+            est_defocus_rms_wfe_step = opt.x[1]
+            # print(len(list(focus_values)*len(freqs)))
+            # print(len(chart_mtf_values.flatten()))
+            # exit()
+            est_defocus_rms_wfe_step = opt.x[1]
+        else:
+            fit, _ = optimize.curve_fit(prysmfit, list(focus_values)*len(freqs), chart_mtf_values.flatten(), p0=initial, sigma=1.0 / weights.flatten(), bounds=curve_fit_bounds)
+            print(fit)
+            prysmfit(0, *fit, plot=1)
+
+            est_defocus_rms_wfe_step = fit[1]
+
+
+
+        # log.debug("Fn fit peak is {:.3f} at {:.2f}".format(fitted_params[0], fitted_params[1]))
+        # log.debug("Fn sigma: {:.3f}".format(fitted_params[2]))
+
+        # ---
+        # Estimate defocus step size
+        # ---
+        # if "_fixed_defocus_step_wfe" in dir(self):
+        #     est_defocus_rms_wfe_step = self._fixed_defocus_step_wfe
+        est_defocus_pv_wfe_step = est_defocus_rms_wfe_step * 2 * 3 ** 0.5
+
+        log.info("--- Focus step size estimates ---")
+        log.info("    RMS Wavefront defocus error {:8.4f} λ".format(est_defocus_rms_wfe_step))
+
+        longitude_defocus_step_um = est_defocus_pv_wfe_step * self.exif.aperture**2 * 8 * 0.55
+        log.info("    Image side focus shift      {:8.3f} µm".format(longitude_defocus_step_um))
+
+        na = 1 / (2.0 * self.exif.aperture)
+        theta = np.arcsin(na)
+        coc_step = np.tan(theta) * longitude_defocus_step_um * 2
+
+        focal_length_m = self.exif.focal_length * 1e-3
+
+        def get_opposide_dist(dist):
+            return 1.0 / (1.0 / focal_length_m - 1.0 / dist)
+
+        lens_angle_of_view = self.exif.angle_of_view
+        # print(lens_angle_of_view)
+        subject_distance = CHART_DIAGONAL * 0.5 / np.sin(lens_angle_of_view / 2)
+        image_distance = get_opposide_dist(subject_distance)
+
+        log.info("    Subject side focus shift    {:8.2f} mm".format((get_opposide_dist(image_distance-longitude_defocus_step_um *1e-6) - get_opposide_dist(image_distance)) * 1e3))
+        log.info("    Blur circle  (CoC)          {:8.2f} µm".format(coc_step))
+
+        log.info("Nominal subject distance {:8.2f} mm".format(subject_distance * 1e3))
+        log.info("Nominal image distance   {:8.2f} mm".format(image_distance * 1e3))
+
+        return est_defocus_rms_wfe_step, longitude_defocus_step_um, coc_step, image_distance, subject_distance, cauchy_peak_y
+
     def find_best_focus(self, x, y, freq=DEFAULT_FREQ, axis=MEDIAL, plot=False, show=True, strict=False, fitfn=cauchy,
-                        _pos=None, _return_step_data_only=False, _step_est_offset=0):
+                        _pos=None, _return_step_data_only=False, _step_est_offset=0.3, _step_estimation_posh=False):
         """
         Get peak SFR at specified location and frequency vs focus, optionally plot.
 
@@ -359,8 +664,8 @@ class FocusSet:
         :param strict: do not raise exception if peak cannot be determined definitively
         :return: peak_focus_loc, peak_sfr, low_bound_focus, high_bound_focus, spline interpolation fn, curve_fn
         """
-        print(x,y, freq, axis)
-        print("---------")
+        # print(x,y, freq, axis)
+        # print("---------")
         # Go recursive if both planes needed
         if axis == MEDIAL and _pos is None:
             best_s = self.find_best_focus(x, y, freq, SAGITTAL, plot, show, strict)
@@ -390,47 +695,127 @@ class FocusSet:
         highest_data_y = y_values[highest_data_x_idx]
         # print(highest_data_x_idx)
 
-        if highest_data_x_idx < (len(y_values) - 2):
-            highest_within_tolerance = y_values > highest_data_y * 0.95
-            filtered_x_idxs = (np.arange(len(x_values)) * highest_within_tolerance)[highest_within_tolerance]
-            # print(filtered_x_idxs)
-            mean_peak_x_idx = filtered_x_idxs.mean()
-            mean_peak_x = x_values[filtered_x_idxs].mean()
-        else:  # Peak is (maybe almost) off edge
-            mean_peak_x = x_values[highest_data_x_idx]
-            mean_peak_x_idx = highest_data_x_idx
-            if highest_data_x_idx == (len(y_values) - 1):
-                log.warning("Peak is at very end of data, true peak is probably missing")
-            else:
-                log.warning("Peak is near end of data, this is not ideal")
+        if 0 and "OLD":
+            if highest_data_x_idx < (len(y_values) - 2):
+                highest_within_tolerance = y_values > highest_data_y * 0.95
+                filtered_x_idxs = (np.arange(len(x_values)) * highest_within_tolerance)[highest_within_tolerance]
+                # print(filtered_x_idxs)
+                mean_peak_x_idx = filtered_x_idxs.mean()
+                mean_peak_x = x_values[filtered_x_idxs].mean()
+            else:  # Peak is (maybe almost) off edge
+                mean_peak_x = x_values[highest_data_x_idx]
+                mean_peak_x_idx = highest_data_x_idx
+                if highest_data_x_idx == (len(y_values) - 1):
+                    log.warning("Peak is at very end of data, true peak is probably missing")
+                else:
+                    log.warning("Peak is near end of data, this is not ideal")
+
+        if highest_data_x_idx > 0:
+            x_inc = x_values[highest_data_x_idx] - x_values[highest_data_x_idx-1]
+        else:
+            x_inc = x_values[highest_data_x_idx+1] - x_values[highest_data_x_idx]
+
+        # y_values = np.cos(np.linspace(-6, 6, len(x_values))) + 1
+        absgrad = np.abs(np.gradient(y_values)) / highest_data_y
+        gradsum = np.cumsum(absgrad)
+        distances_from_peak = np.abs(gradsum - np.mean(gradsum[highest_data_x_idx:highest_data_x_idx+1]))
+        shifted_distances = interpolate.InterpolatedUnivariateSpline(x_values, distances_from_peak, k=1)(x_values - x_inc*0.5)
+        weights = np.clip(1.0 - shifted_distances * 1.3 , 1e-1, 1.0) ** 5
+        mean_peak_x = x_values[highest_data_x_idx]
+
+        # shifted_distances = np.concatenate(([distances_from_peak[0]], distances_from_peak[1:] + distances_from_peak[:-1] / 2))
+        if 0 and "DEBUGPLOT":
+            print(absgrad)
+            print(gradsum)
+            print(distances_from_peak)
+            plt.plot(y_values, label="yvals")
+            plt.plot(absgrad, label="grad")
+            plt.plot(gradsum, label="gradsum")
+            plt.plot(distances_from_peak, label="distfrompeak")
+            plt.plot(shifted_distances, label="distfrompeakshift")
+            plt.plot(weights, label="weights")
+            plt.legend()
+            plt.show()
+            exit()
+
 
         # print(mean_peak_x_idx)
         # print(mean_peak_x)
         # Define optimisation bounds
         # bounds = ((highest_data_y * 0.95, mean_peak_x_idx - 0.9, 0.8, -0.3),
         #           (highest_data_y * 1.15, mean_peak_x_idx + 0.9, 50.0, 1.3))
-        if highest_data_x_idx > 0:
-            x_inc = x_values[highest_data_x_idx] - x_values[highest_data_x_idx-1]
-        else:
-            x_inc = x_values[highest_data_x_idx+1] - x_values[highest_data_x_idx]
-        bounds = ((highest_data_y * 0.98, mean_peak_x - x_inc * 2, 0.4 * x_inc,),
-                  (highest_data_y * 1.15, mean_peak_x + x_inc * 2, 100.0 * x_inc,))
+        # bounds = ((highest_data_y * 0.98, mean_peak_x - x_inc * 2, 0.4 * x_inc,),
+        #           (highest_data_y * 1.15, mean_peak_x + x_inc * 2, 100.0 * x_inc,))
 
-        offsets = np.arange(len(y_values)) - mean_peak_x_idx  # x-index vs peak estimate
-        weights_a = np.clip(1.2 - np.abs(offsets) / 11, 0.1, 1.0) ** 2  # Weight small offsets higher
-        norm_y_values = y_values / y_values.max()  # Normalise to 1.0
-        weights_b = np.clip(norm_y_values - 0.4, 0.0001, 1.0)  # Weight higher points higher, ignore below 0.4
-        weights = weights_a * weights_b  # Merge
-        weights = weights / weights.max()  # Normalise
+        bounds = fitfn.bounds(mean_peak_x, highest_data_y, x_inc)
+
+        if 0 and "OLD":
+            offsets = np.arange(len(y_values)) - mean_peak_x_idx  # x-index vs peak estimate
+            weights_a = np.clip(1.2 - np.abs(offsets) / 11, 0.1, 1.0) ** 2  # Weight small offsets higher
+            norm_y_values = y_values / y_values.max()  # Normalise to 1.0
+            weights_b = np.clip(norm_y_values - 0.4, 0.0001, 1.0)  # Weight higher points higher, ignore below 0.4
+            weights = weights_a * weights_b  # Merge
+            weights = weights / weights.max()  # Normalise
         # print(bounds)
         sigmas = 1. / weights
-        initial = (highest_data_y, mean_peak_x, 3.0 * x_inc,)
+        # initial = (highest_data_y, mean_peak_x, 3.0 * x_inc,)
+        initial = fitfn.initial(mean_peak_x, highest_data_y, x_inc)
         fitted_params, _ = optimize.curve_fit(fitfn, x_values, y_values,
                                               bounds=bounds, sigma=sigmas, ftol=1e-5, xtol=1e-5,
                                               p0=initial)
-
+        #
         fit_peak_x = fitted_params[1]
         fit_peak_y = fitted_params[0]
+
+        count = 0
+
+        def prysmfit(defocuss, defocus_offset, defocus_step, aberr, a2=0, plot=False):
+            # freqs = np.arange(0, 32, 1) / 64 * 250
+            freqs = LOWAVG_NOMBINS / 64 * 250
+            # print(defocus_offset, defocus_step, aberr)
+            out = []
+            for defocus in defocuss:
+                pupil = prysm.NollZernike(Z4=(defocus - defocus_offset) * defocus_step * 0.575 - aberr / 2,
+                                          dia=10, norm=True,
+                                          z11=aberr,
+                                          z22=a2,
+                                          wavelength=0.575,
+                                          opd_unit="um",
+                                          samples=256)
+                # prysm.PSF.from_pupil(pupil, efl=10*self.exif.aperture).plot2d()
+                # plt.show()
+                m = prysm.MTF.from_pupil(pupil, efl=self.exif.aperture * 10)
+                out.append(np.mean(m.exact_tan(freqs)))
+            if plot:
+                # pupil.plot2d()
+                # plt.show()
+                # plt.plot(out, label="Prysm Model {:.3f}λ Z4 step size, {:.3f}λ Z11".format(defocus_step, aberr / 0.575))
+                plt.plot(out, label="Prysm Model {:.3f}λ Z4 step size, {:.3f}λ Z11, {:.3f}λ Z22".format(defocus_step, aberr / 0.575, a2 / 0.575))
+                plt.plot(y_values, label="MTF Mapper data")
+                plt.xlabel("Focus position (arbitrary units)")
+                plt.ylabel("MTF")
+                plt.title("Prysm model vs chart ({:.32}-{:.2f}cy/px AUC) {}".format(LOWAVG_NOMBINS[0] / 64, LOWAVG_NOMBINS[-1] / 64, self.exif.summary))
+                plt.ylim(0, 1)
+                plt.legend()
+                plt.show()
+            global count
+            count += 1
+            # print(count)
+            return np.array(out)
+
+        if _step_estimation_posh and _return_step_data_only:
+            fit_peak_y = 0
+            #
+            initial = [fit_peak_x, 0.3, (1.0 - fitted_params[0]) / 5,(1.0 - fitted_params[0]) / 5, ]#[:3]
+            bounds = (min(x_values), 0.001, 0.0, 0), (max(x_values), 0.35, 0.45, 0.45)
+            # bounds = bounds[0][:3], bounds[1][:3]
+            sigmas = 1.0 / (y_values ** 1)
+            prysm_params, _ = optimize.curve_fit(prysmfit, x_values, y_values,
+                                                  bounds=bounds, sigma=sigmas, ftol=1e-3, xtol=1e-3,
+                                                  p0=initial)
+            # print("Prysm fit params", prysm_params)
+            if plot:
+                prysmfit(x_values, *prysm_params, plot=True)
 
         log.debug("Fn fit peak is {:.3f} at {:.2f}".format(fitted_params[0], fitted_params[1]))
         log.debug("Fn sigma: {:.3f}".format(fitted_params[2]))
@@ -439,17 +824,20 @@ class FocusSet:
             # ---
             # Estimate defocus step size
             # ---
-
-            est_defocus_rms_wfe_step = (1.0 / fitted_params[2] / (fit_peak_y + _step_est_offset)) / self.exif.aperture / 0.151358
+            if _step_estimation_posh:
+                est_defocus_rms_wfe_step = prysm_params[1]
+                log.info("Using posh estimation model")
+            else:
+                est_defocus_rms_wfe_step = (4.387 / fitted_params[2] / (fit_peak_y + _step_est_offset)) / self.exif.aperture
             if "_fixed_defocus_step_wfe" in dir(self):
                 est_defocus_rms_wfe_step = self._fixed_defocus_step_wfe
             est_defocus_pv_wfe_step = est_defocus_rms_wfe_step * 2 * 3 ** 0.5
 
-            log.debug("--- Focus step size estimates ---")
-            log.debug("    RMS Wavefront defocus error {:8.4f} λ".format(est_defocus_rms_wfe_step))
+            log.info("--- Focus step size estimates ---")
+            log.info("    RMS Wavefront defocus error {:8.4f} λ".format(est_defocus_rms_wfe_step))
 
             longitude_defocus_step_um = est_defocus_pv_wfe_step * self.exif.aperture**2 * 8 * 0.55
-            log.debug("    Image side focus shift      {:8.3f} µm".format(longitude_defocus_step_um))
+            log.info("    Image side focus shift      {:8.3f} µm".format(longitude_defocus_step_um))
 
             na = 1 / (2.0 * self.exif.aperture)
             theta = np.arcsin(na)
@@ -461,15 +849,15 @@ class FocusSet:
                 return 1.0 / (1.0 / focal_length_m - 1.0 / dist)
 
             lens_angle_of_view = self.exif.angle_of_view
-            print(lens_angle_of_view)
+            # print(lens_angle_of_view)
             subject_distance = CHART_DIAGONAL * 0.5 / np.sin(lens_angle_of_view / 2)
             image_distance = get_opposide_dist(subject_distance)
 
-            log.debug("    Subject side focus shift    {:8.2f} mm".format((get_opposide_dist(image_distance-longitude_defocus_step_um *1e-6) - get_opposide_dist(image_distance)) * 1e3))
-            log.debug("    Blur circle  (CoC)          {:8.2f} µm".format(coc_step))
+            log.info("    Subject side focus shift    {:8.2f} mm".format((get_opposide_dist(image_distance-longitude_defocus_step_um *1e-6) - get_opposide_dist(image_distance)) * 1e3))
+            log.info("    Blur circle  (CoC)          {:8.2f} µm".format(coc_step))
 
-            log.debug("Nominal subject distance {:8.2f} mm".format(subject_distance * 1e3))
-            log.debug("Nominal image distance   {:8.2f} mm".format(image_distance * 1e3))
+            log.info("Nominal subject distance {:8.2f} mm".format(subject_distance * 1e3))
+            log.info("Nominal image distance   {:8.2f} mm".format(image_distance * 1e3))
 
             # def curvefn(xvals):
             #     image_distances = get_opposide_dist(xvals)
@@ -482,7 +870,7 @@ class FocusSet:
         # def curvefn(xvals):
         #     return fitfn(xvals, fit_peak_y, 0.0, fitted_params[2] * coc_step)
         def curvefn(xvals):
-            return fitfn(xvals, fit_peak_y, fit_peak_x, fitted_params[2])
+            return fitfn(xvals, *fitted_params)
         # x_values = (x_values - fit_peak_x) * coc_step
 
         # fit_peak_x = 0  # X-values have been normalised around zero
@@ -493,8 +881,8 @@ class FocusSet:
         mean_abs_error_rel = mean_abs_error / highest_data_y
 
         log.debug("RMS fit error (normalised 1.0): {:.3f}".format(mean_abs_error_rel))
-
-        if mean_abs_error_rel > 10.12:
+        # print(mean_abs_error_rel)
+        if mean_abs_error_rel > 0.09:
             errorstr = "Very high fit error: {:.3f}".format(mean_abs_error_rel)
             log.warning(errorstr)
             print("{}, {}, {}, {}".format(x, y, freq, axis))
@@ -503,7 +891,7 @@ class FocusSet:
                 plt.show()
             pos = FocusOb(fit_peak_x, fit_peak_y, interp_fn, curvefn)
             raise FitError(errorstr, fitpos=pos)
-        elif mean_abs_error_rel > 10.06:
+        elif mean_abs_error_rel > 0.05:
             errorstr = "High fit error: {:.3f}".format(mean_abs_error_rel)
             log.warning(errorstr)
             # print(x, y, freq, axis)
@@ -545,29 +933,32 @@ class FocusSet:
         ob.y_loc = y
         return ob
 
-    def attempt_to_calibrate_focus(self, x=IMAGE_WIDTH/2, y=IMAGE_HEIGHT/2, freq=AUC, unit=FOCUS_SCALE_COC, pixelsize=DEFAULT_PIXEL_SIZE):
-        tup = self.find_best_focus(x, y, LOWAVG, MERIDIONAL, _return_step_data_only=True)
-        est_defocus_rms_wfe_step, longitude_defocus_step_um, coc_step, image_distance, subject_distance, _ = tup
+    def attempt_to_calibrate_focus(self, x=IMAGE_WIDTH/2, y=IMAGE_HEIGHT/2, freq=AUC, plot=False,
+                                   unit=FOCUS_SCALE_COC, pixelsize=DEFAULT_PIXEL_SIZE, posh=True):
+        tup = self.find_best_focus(x, y, LOWAVG if posh else LOWAVG, MERIDIONAL, plot=plot,
+                                   _return_step_data_only=True, _step_estimation_posh=posh)
+        if unit is not None:
+            est_defocus_rms_wfe_step, longitude_defocus_step_um, coc_step, image_distance, subject_distance, _ = tup
 
-        pos = self.find_best_focus(x, y, freq, MERIDIONAL)
-        log.debug("Best focus index {}".format(pos.focuspos))
-        old_x = np.arange(0, len(self.fields))
-        if unit == FOCUS_SCALE_COC:
-            step = coc_step
-            self.focus_scale_label = FOCUS_SCALE_COC
-        elif unit == FOCUS_SCALE_COC_PIXELS:
-            step = coc_step / pixelsize * 1e-6
-            self.focus_scale_label = FOCUS_SCALE_COC_PIXELS
-        elif unit == FOCUS_SCALE_RMS_WFE:
-            step = est_defocus_rms_wfe_step
-            self.focus_scale_label = FOCUS_SCALE_RMS_WFE
-        elif unit == FOCUS_SCALE_FOCUS_SHIFT:
-            step = longitude_defocus_step_um
-            self.focus_scale_label = FOCUS_SCALE_FOCUS_SHIFT
-        else:
-            raise ValueError("Unknown units")
-        new_x = (old_x - pos.focuspos) * step
-        self._focus_data = new_x
+            pos = self.find_best_focus(x, y, freq, MERIDIONAL)
+            log.debug("Best focus index {}".format(pos.focuspos))
+            old_x = np.arange(0, len(self.fields))
+            if unit == FOCUS_SCALE_COC:
+                step = coc_step
+                self.focus_scale_label = FOCUS_SCALE_COC
+            elif unit == FOCUS_SCALE_COC_PIXELS:
+                step = coc_step / pixelsize * 1e-6
+                self.focus_scale_label = FOCUS_SCALE_COC_PIXELS
+            elif unit == FOCUS_SCALE_RMS_WFE:
+                step = est_defocus_rms_wfe_step
+                self.focus_scale_label = FOCUS_SCALE_RMS_WFE
+            elif unit == FOCUS_SCALE_FOCUS_SHIFT:
+                step = longitude_defocus_step_um
+                self.focus_scale_label = FOCUS_SCALE_FOCUS_SHIFT
+            else:
+                raise ValueError("Unknown units")
+            new_x = (old_x - pos.focuspos) * step
+            self._focus_data = new_x
 
     @property
     def focus_data(self):
