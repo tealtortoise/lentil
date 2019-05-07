@@ -15,6 +15,7 @@ log.addHandler(ch)
 
 SFRFILENAME = 'edge_sfr_values.txt'
 
+MULTIPROCESSING = 16  # Number of processes to use (1 to disable multiprocessing)
 
 SAGITTAL = "SAGITTAL"
 MERIDIONAL = "MERIDIONAL"
@@ -89,7 +90,7 @@ FOCUS_SCALE_RMS_WFE = "RMS Defocus wavefront error (λ)"
 
 
 def CENTRE_WEIGHTED(height):
-    return (1.0 - height) ** 2
+    return (1.0 - height) ** 1
 
 def EDGE_WEIGHTED(height):
     return np.clip(1.1 - np.abs(0.6 - height)*1.4, 0.0001, 1.0) ** 2
@@ -462,3 +463,13 @@ class Calibrator:
             csvwriter.writerow(list(RAW_SFR_FREQUENCIES[:len(self.averaged)]))
             csvwriter.writerow(list(self.averaged))
             print("Calibration written!")
+
+
+with open("photopic.csv", 'r') as photopic_file:
+    reader = csv.reader(photopic_file, delimiter=',', quotechar='|')
+    waves, mags = zip(*reader)
+    photopic_fn = interpolate.InterpolatedUnivariateSpline([float(_) for _ in waves], [float(_) for _ in mags], k=1)
+
+# plotfreqs = np.linspace(400, 700, 50)
+# plt.plot(plotfreqs, photopic_fn(plotfreqs))
+# plt.show()

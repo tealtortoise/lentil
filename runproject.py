@@ -125,16 +125,21 @@ fns = {}
 freq = 0.28
 calibrator = Calibrator()
 for nheight, path in enumerate(PATHS[:]):
-    if "56mm/" in path and "f2" in path:
+    if "90mm/f4/" in path and "f" in path:
         focusset = FocusSet(fallback_results_path(os.path.join(BASE_PATH, path), 3), include_all=1, use_calibration=1)
+        # focusset.find_focus_spacing()
+        # focusset.attempt_to_calibrate_focus()
         # focusset.remove_duplicated_fields()
         # focusset.exif.focal_length = 45
         # focusset.exif.aperture = 1.8
-        # focusset.find_focus_spacing()
+        focusset.find_focus_spacing()
         # focusset.attempt_to_calibrate_focus(unit=None)
-        focusset.attempt_to_calibrate_focus(unit=FOCUS_SCALE_COC_PIXELS, posh=True, plot=True)
-        # exit()
-        focusset.plot_ideal_focus_field(axis=ALL_THREE_AXES, fix_zlim=(-5,5))
+        # focusset.attempt_to_calibrate_focus(unit=FOCUS_SCALE_COC_PIXELS, posh=False, plot=True)
+        # focusset.find_compromise_focus(plot_type=SMOOTH2D, weighting_fn=CENTRE_WEIGHTED)
+        # focusset.find_compromise_focus(plot_type=SMOOTH2D, weighting_fn=EDGE_WEIGHTED)
+        # focusset.find_compromise_focus(plot_type=SMOOTH2D, weighting_fn=CORNER_WEIGHTED)
+        # focusset.find_compromise_focus(plot_type=SMOOTH2D, weighting_fn=EVEN_WEIGHTED)
+        # focusset.plot_ideal_focus_field(axis=MEDIAL, detail=1.4)#,  fix_zlim=(-10,3), )
         # for x in np.linspace(0, IMAGE_WIDTH, 20):
         #     focusset.find_best_focus(x, x*2/3, AUC, MERIDIONAL, plot=1)
         #     focusset.find_best_focus(x, x*2/3, AUC, SAGITTAL, plot=1)
@@ -145,10 +150,9 @@ for nheight, path in enumerate(PATHS[:]):
         # focusset.estimate_wavefront_error(max_fnumber_error=0.0)
     # focusset = FocusSet(os.path.join(BASE_PATH, path), include_all=1, use_calibration=1)
     # focusset.attempt_to_calibrate_focus()
-    exit()
+    # exit()
     # focusset.build_calibration(writetofile=1)
     # print(focusset.fields[0].points[0].calibration)
-    # focusset.estimate_wavefront_error()
     # focusset.plot_ideal_focus_field(axis=MERIDIONAL)
     # focusset.find_best_focus(4500, 4500, LOWAVG, axis=MERIDIONAL, plot=1)
     # print(focusset.exif.aperture)

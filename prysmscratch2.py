@@ -8,11 +8,19 @@ import inspect
 
 import numpy as np
 from scipy import  interpolate, optimize
-from prysm import NollZernike, MTF, PSF
+from prysm import NollZernike, MTF, PSF, FringeZernike
 
 from matplotlib import pyplot as plt
 from lentil import FocusSet
 from lentil.constants_utils import *
+# 9, 16, 25, 36
+for z in range(3,60):
+    print(z)
+    p = FringeZernike(**{"Z{}".format(z):0.3})
+    print(z)
+    p.plot2d()
+    plt.show()
+exit()
 
 plt.style.use('bmh')
 if 0:

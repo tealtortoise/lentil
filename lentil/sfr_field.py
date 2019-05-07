@@ -159,7 +159,6 @@ class SFRField():
         :param freq: spacial frequency to return, -1 for mtf50
         :return: interpolated cy/px at specified frequency, or mtf50 frequency if -1 passed
         """
-
         if self.np_dict_cache[axis]['np_x'] is None or self.np_dict_cache[axis]['np_sfr_freq'] != freq:
             lst = []
             for point in self.get_subset(axis):
