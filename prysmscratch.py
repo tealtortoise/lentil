@@ -15,6 +15,19 @@ from lentil import FocusSet
 from lentil.constants_utils import *
 
 plt.style.use('bmh')
+
+fstop = 2.8
+xay = np.linspace(-1, 1, 128)
+radius_ref = fstop * 2
+radius_new = radius_ref * 1.1
+theta = np.asin(xay / radius_ref)
+wf_new =
+
+pupil = NollZernike(z1=1, z4=1)
+plt.plot(pupil.slice_x[1])
+plt.show()
+
+exit()
 freqs = np.arange(0.0, 0.5, 1/64) * 250
 if 0:
     for z in [0,4,11,22, 37, -1]:

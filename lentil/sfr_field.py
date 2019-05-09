@@ -32,7 +32,6 @@ class SFRField():
         if points is None:
             points = []
             with open(pathname, 'r') as sfrfile:
-                print(999, pathname)
                 csvreader = csv.reader(sfrfile, delimiter=' ', quotechar='|')
 
                 for row in csvreader:

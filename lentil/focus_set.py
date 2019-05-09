@@ -132,7 +132,6 @@ class FocusSet:
             print("Did not find lentildata, finding files...")
             with os.scandir(rootpath) as it:
                 for entry in it:
-                    print(entry.path)
                     try:
                         entrynumber = int("".join([s for s in entry.name if s.isdigit()]))
                     except ValueError:
@@ -140,13 +139,12 @@ class FocusSet:
 
                     if entry.is_dir():
                         fullpathname = os.path.join(rootpath, entry.path, SFRFILENAME)
-                        print(fullpathname)
                         sfr_file_exists = os.path.isfile(fullpathname)
                         if not sfr_file_exists:
                             continue
                         stubname = os.path.join(entry.name, SFRFILENAME)
                     elif entry.is_file() and entry.name.endswith("sfr"):
-                        print("Found {}".format(entry.name))
+                        print("Found {}".format(entry.path))
                         fullpathname = entry.path
                         stubname = entry.name
                     else:
@@ -944,7 +942,7 @@ class FocusSet:
         sum_ = sum([tup[1].raw_sfr_data for tup in best])
         return sum_ / n
 
-    def find_sharpest_location(self, freq=AUC, axis=MEDIAL, detail=1.0):
+    def find_sharpest_location(self, freq=AUC, axis=MEDIAL, detail=1.4):
         gridit, numparr, x_values, y_values = self.get_grids(detail=detail)
         heights = numparr.copy()
         focusposs = numparr.copy()
