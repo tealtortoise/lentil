@@ -157,6 +157,10 @@ for arg in argv[1:]:
         new_txtfilepath_ca = os.path.join(process_subdir_ca, "{}.ca_only.sfr".format(entry.name))
         new_txtfilepath_fullcorr = os.path.join(process_subdir_fullcorr, "{}.ca_and_distortion.sfr".format(entry.name))
 
+        new_esf_filepath = os.path.join(process_subdir, "{}.no_corr.esf".format(entry.name))
+        new_esf_filepath_ca = os.path.join(process_subdir_ca, "{}.ca_only.esf".format(entry.name))
+        new_esf_filepath_fullcorr = os.path.join(process_subdir_fullcorr, "{}.ca_and_distortion.esf".format(entry.name))
+
         print("Processing file {}".format(entry.name))
 
         # Process RAF exif
@@ -208,8 +212,12 @@ for arg in argv[1:]:
         else:
             print("Lens does not need distortion correction")
 
-        if os.path.exists(new_txtfilepath) and \
-                (os.path.exists(new_txtfilepath_ca) or not caed) and (os.path.exists(new_txtfilepath_fullcorr) or not distorted):
+        if (os.path.exists(new_txtfilepath) and
+            (os.path.exists(new_txtfilepath_ca) or not caed) and
+            (os.path.exists(new_txtfilepath_fullcorr) or not distorted) and
+            os.path.exists(new_esf_filepath) and
+            (os.path.exists(new_esf_filepath_ca) or not caed) and
+            (os.path.exists(new_esf_filepath_fullcorr) or not distorted)):
             print("{} appears to already exist, skipping processing".format(new_txtfilepath))
             continue
         if caed:
@@ -290,7 +298,6 @@ for arg in argv[1:]:
                 os.remove(greenpath)
                 os.remove(bluepath)
 
-
             if n == 0:
                 image_to_analyse = uncorrected_image_path
 
@@ -301,28 +308,38 @@ for arg in argv[1:]:
 
             print("Running mtf_mapper for loop {}...".format(n+1))
             print("Analysing file '{}'...".format(image_to_analyse))
-            output = subprocess.check_output(["mtf_mapper", "-a", "-q", "--nosmoothing", image_to_analyse, WORKING_DIR])
+            output = subprocess.check_output(["mtf_mapper", "-a", "-q", "-l", "--nosmoothing", "-e", image_to_analyse, WORKING_DIR])
 
-            temp_txt_output_path = os.path.join(WORKING_DIR, "edge_sfr_values.txt")
+            temp_mtf_output_path = os.path.join(WORKING_DIR, "edge_sfr_values.txt")
+            temp_esf_output_path = os.path.join(WORKING_DIR, "raw_esf_values.txt")
 
             if n == 0:
                 destination_txt_path = new_txtfilepath
+                destination_esf_path = new_esf_filepath
                 output = subprocess.check_output(["convert", uncorrected_image_path, uncorrected_image_path + ".jpg"])
             elif n == 1:
                 destination_txt_path = new_txtfilepath_ca
+                destination_esf_path = new_esf_filepath_ca
                 output = subprocess.check_output(["convert", corrected_image_path, corrected_image_path + ".ca_only.jpg"])
             elif n == 2:
                 destination_txt_path = new_txtfilepath_fullcorr
+                destination_esf_path = new_esf_filepath_fullcorr
                 output = subprocess.check_output(["convert", corrected_image_path, corrected_image_path + ".full.jpg"])
             else:
                 raise Exception()
 
-            print("Moving {} -> {}".format(temp_txt_output_path, destination_txt_path))
+            print("Moving {} -> {}".format(temp_mtf_output_path, destination_txt_path))
+            print("Moving {} -> {}".format(temp_esf_output_path, destination_esf_path))
             try:
                 os.remove(destination_txt_path)
             except FileNotFoundError:
                 pass
-            shutil.move(temp_txt_output_path, destination_txt_path)
+            try:
+                os.remove(destination_esf_path)
+            except FileNotFoundError:
+                pass
+            shutil.move(temp_mtf_output_path, destination_txt_path)
+            shutil.move(temp_esf_output_path, destination_esf_path)
             print()
 
         os.remove(linked_raw_path)

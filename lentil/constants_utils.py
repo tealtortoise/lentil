@@ -1,10 +1,10 @@
 import csv
 import os
+import timeit
 import logging
 import numpy as np
-from scipy import interpolate
+from scipy import interpolate, optimize
 import  matplotlib.pyplot as plt
-import prysm
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
@@ -15,6 +15,8 @@ log.addHandler(ch)
 
 SFRFILENAME = 'edge_sfr_values.txt'
 
+CURRENT_JITTER_CODE_VERSION = 2
+
 MULTIPROCESSING = 16  # Number of processes to use (1 to disable multiprocessing)
 
 SAGITTAL = "SAGITTAL"
@@ -22,6 +24,26 @@ MERIDIONAL = "MERIDIONAL"
 MEDIAL = "MEDIAL"
 BOTH_AXES = "BOTH"
 ALL_THREE_AXES = "ALL THREE AXES"
+
+SAGITTAL_COMPLEX = "SAGITTAL_COMPLEX"
+MERIDIONAL_COMPLEX = "MERIDIONAL_COMPLEX"
+SAGITTAL_REAL = "SAGITTAL_REAL"
+MERIDIONAL_REAL = "MERIDIONAL_REAL"
+SAGITTAL_IMAG = "SAGITTAL_IMAJ"
+MERIDIONAL_IMAG = "MERIDIONAL_IMAJ"
+SAGITTAL_ANGLE = "SAGGITAL_ANGLE"
+MERIDIONAL_ANGLE = "MERIDIONAL_ANGLE"
+
+COMPLEX_AXES = [SAGITTAL_COMPLEX, MERIDIONAL_COMPLEX, SAGITTAL_REAL, MERIDIONAL_REAL, SAGITTAL_IMAG, MERIDIONAL_IMAG, SAGITTAL_ANGLE, MERIDIONAL_ANGLE]
+REAL_AXES = [SAGITTAL_REAL, MERIDIONAL_REAL]
+IMAG_AXES = [SAGITTAL_IMAG, MERIDIONAL_IMAG, MERIDIONAL_ANGLE, SAGITTAL_ANGLE]
+SAGITTAL_AXES = [SAGITTAL, SAGITTAL_REAL, SAGITTAL_IMAG, SAGITTAL_COMPLEX, SAGITTAL_ANGLE]
+MERIDIONAL_AXES = [MERIDIONAL, MERIDIONAL_REAL, MERIDIONAL_IMAG, MERIDIONAL_COMPLEX, MERIDIONAL_ANGLE]
+POLAR_AXES = [SAGITTAL_ANGLE, MERIDIONAL_ANGLE]
+
+COMPLEX_CARTESIAN = 1
+COMPLEX_POLAR_TUPLE = 2
+COMPLEX_CARTESIAN_REAL_TUPLE = 3
 
 PLOT_ON_FIT_ERROR = True
 PLOT_MTF50_ERROR = True
@@ -38,7 +60,7 @@ SFR_HEADER = [
 
 FIELD_SMOOTHING_MIN_POINTS = 24
 FIELD_SMOOTHING_MAX_RATIO = 0.3
-FIELD_SMOOTHING_ORDER = 3
+FIELD_SMOOTHING_ORDER = 2
 
 LOW_BENCHMARK_FSTOP = 22
 HIGH_BENCHBARK_FSTOP = 4
@@ -180,6 +202,7 @@ def calc_image_height(x, y):
 RAW_SFR_FREQUENCIES = np.array([x / 64 for x in range(64)])  # List of sfr frequencies in cycles/pixel
 
 
+
 GOOD = [1., 0.98582051, 0.95216779, 0.91605742, 0.88585631, 0.86172936,
      0.84093781, 0.82116408, 0.80170952, 0.78201686, 0.76154796, 0.73985244,
      0.7166293, 0.69158089, 0.66423885, 0.63510484, 0.60407738, 0.57122645,
@@ -238,7 +261,7 @@ def psysmfit(defocus, defocus_offset, aberr):
 
 class EXIF:
     def __init__(self, sfr_pathname=None, exif_pathname=None):
-        self.exif = {}
+        self.exif = {"NOTHING HERE FOR SPACE PURPOSES": True}
         value = ""
         self.aperture = 1.0
         self.focal_length_str = value
@@ -262,15 +285,16 @@ class EXIF:
                     print("Found EXIF file")
                     reader = csv.reader(file, delimiter=',', quotechar='|')
                     for row in reader:
-                        if row[0] in self.exif:
-                            self.exif[row[0]+"_dup"] = row[1]
-                        else:
-                            self.exif[row[0]] = row[1]
+                        # if row[0] in self.exif:
+                        #     self.exif[row[0]+"_dup"] = row[1]
+                        # else:
+                        #     self.exif[row[0]] = row[1]
 
                         tag, value = row[:2]
                         # print(tag, value)
                         if tag == "Aperture":
-                            self.aperture = float(value[:])
+                            fl = float(value[:])
+                            self.aperture = 1.25 if fl == 1.2 else fl
                         elif tag == "Focal Length" and "equivalent" not in value:
                             self.focal_length_str = value
                         elif tag == "Lens Model":
@@ -283,6 +307,7 @@ class EXIF:
                             self.ca_exif = value
             except FileNotFoundError:
                 log.warning("No EXIF found")
+        print("Aperture is {}".format(self.aperture))
 
     @property
     def summary(self):
@@ -300,6 +325,10 @@ class EXIF:
     @property
     def focal_length(self):
         return float(self.focal_length_str.split(" ")[0])
+
+    @focal_length.setter
+    def focal_length(self, fl):
+        self.focal_length_str = "{} mm".format(fl)
 
     @focal_length.setter
     def focal_length(self, floatin):
@@ -350,6 +379,10 @@ COLOURS = ['red',
            'deeppink',
            'black']
 
+NICECOLOURS = ['red',
+               'green',
+               'blue',
+               'darkviolet']
 
 class Calibrator:
     def __init__(self):
@@ -473,3 +506,208 @@ with open("photopic.csv", 'r') as photopic_file:
 # plotfreqs = np.linspace(400, 700, 50)
 # plt.plot(plotfreqs, photopic_fn(plotfreqs))
 # plt.show()
+
+def convert_complex(tup, type):
+    if type == COMPLEX_CARTESIAN_REAL_TUPLE:
+        return tup
+    if type == COMPLEX_CARTESIAN:
+        return tup[0] + 1j * tup[1]
+    if type == COMPLEX_POLAR_TUPLE:
+        r, i = tup
+        return (r**2 + i**2)**0.5, np.arctan2(r, i)
+
+def tryfloat(inp):
+    try:
+        return float(inp)
+    except ValueError:
+        return inp
+
+
+class FocusSetData:
+    def __init__(self):
+        self.merged_mtf_values = None
+        self.sag_mtf_values = None
+        self.mer_mtf_values = None
+        self.mtf_means = None
+        # self.focus_values = None
+        self.max_pos = None
+        self.weights = None
+        self.exif = None
+        self.cauchy_peak_x = None
+        self.x_loc = None
+        self.y_loc = None
+        self.hints = {}
+        self.wavefront_data = [("", {})]
+
+    def get_wavefront_data_path(self, seed="less"):
+        try:
+            return "wavefront_results/Seed{}/f{:.2f}/".format(seed, self.exif.aperture)
+        except AttributeError:
+            return "wavefront_results/Seed{}/f{:.2f}/".format(seed, 0)
+
+D50 = {
+380: 24.875289,
+385: 27.563481,
+390: 30.251674,
+395: 40.040332,
+400: 49.828991,
+405: 53.442452,
+410: 57.055912,
+415: 58.804446,
+420: 60.552981,
+425: 59.410306,
+430: 58.267630,
+435: 66.782105,
+440: 75.296579,
+445: 81.505921,
+450: 87.715262,
+455: 89.377806,
+460: 91.040350,
+465: 91.389339,
+470: 91.738329,
+475: 93.587777,
+480: 95.437226,
+485: 93.832642,
+490: 92.228058,
+495: 94.083274,
+500: 95.938491,
+505: 96.364129,
+510: 96.789768,
+515: 97.020168,
+520: 97.250568,
+525: 99.719339,
+530: 102.188110,
+535: 101.500286,
+540: 100.812463,
+545: 101.578486,
+550: 102.344510,
+555: 101.172255,
+560: 100.000000,
+565: 98.856409,
+570: 97.712817,
+575: 98.290562,
+580: 98.868307,
+585: 96.143758,
+590: 93.419210,
+595: 95.490174,
+600: 97.561139,
+605: 98.335311,
+610: 99.109482,
+615: 98.982006,
+620: 98.854530,
+625: 97.185755,
+630: 95.516980,
+635: 97.061662,
+640: 98.606343,
+645: 97.006890,
+650: 95.407437,
+655: 96.649097,
+660: 97.890758,
+665: 100.274818,
+670: 102.658878,
+675: 100.722246,
+680: 98.785615,
+685: 92.936539,
+690: 87.087464,
+695: 89.179124,
+700: 91.270785,
+705: 91.925918,
+710: 92.581051,
+715: 84.591223,
+720: 76.601396,
+725: 81.418425,
+730: 86.235455,
+735: 89.262560,
+740: 92.289664,
+745: 85.138388,
+750: 77.987113,
+755: 67.745912,
+760: 57.504710,
+765: 70.080157,
+770: 82.655604,
+775: 80.341321,
+780: 78.027038}
+
+nms, spds = zip(*D50.items())
+d50_interpolator = interpolate.InterpolatedUnivariateSpline(np.array(nms) * 1e-3, spds, k=1)
+
+# import cupy
+# from cupyx.scipy import fftpack
+
+
+def get_good_fft_sizes():
+    _all = []
+    _upto = 2048
+    _factors = [2, 3, 5]
+    _power_lst = []
+    for factor in _factors:
+        powers = np.arange(-1, int(np.log(_upto) / np.log(factor) + 1.1))
+        _power_lst.append(powers)
+
+    _power_lst = [np.arange(-1, 14), [-1,0,1,2,3,4,5,6], [-1,0,1,2,3]]
+    print(_power_lst)
+
+    mesh = np.meshgrid(*_power_lst)
+    for powers in zip(*[_.flatten() for _ in mesh]):
+        sum = 1
+        for power, factor in zip(powers, _factors):
+            # print(factor, power)
+            if power != -1:
+                sum *= factor ** power
+        # print(sum)
+        _all.append(sum)
+        # print()
+    unique = np.unique(_all)
+    unique = unique[unique <= _upto]
+    uniquebig = unique[unique >= 64]
+    for _ in range(2):
+        unique_worth_it = []
+        best_time = np.inf
+        for size in np.flip(uniquebig):
+            if size % 2 == 1:
+                continue
+            # arr = cupy.ones((size, size)) * 0.2 + 0.1j
+            if size == _upto:
+                runtimes = 3
+            else:
+                runtimes = 2
+            for _ in range(runtimes):
+                reps = int(10 * (2048 + 256)**2 / (size+256)**2)
+                # time = timeit.timeit("ndimage.affine_transform(cupy.abs(fftpack.fft(arr))**2, transform, offset, order=1)", number=reps,
+                #                      setup="from cupyx.scipy import fftpack, ndimage; import cupy;"
+                #                            "transform = cupy.array([[1.01,0.01],[0.99, -0.01]]);offset=0.01;"
+                #                            "arr = cupy.ones(({},{}), dtype='complex128') * 0.2 + 0.1j".format(size, size)) / reps * 1000
+                reps = int(2 * (2048 + 256)**2 / (size+256)**2)
+                time = timeit.timeit("ndimage.affine_transform(numpy.abs(fftpack.fft(arr))**2, transform, offset, order=1)", number=reps,
+                                     setup="from scipy import fftpack, ndimage; import numpy;"
+                                           "transform = numpy.array([[1.01,0.01],[0.99, -0.01]]);offset=0.01;"
+                                           "arr = numpy.ones(({},{}), dtype='complex128') * 0.2 + 0.1j".format(size, size)) / reps * 1000
+            print("FFT {}, {}s".format(size, time))
+            if time < best_time:
+                print("Worth it!")
+                best_time = time
+                unique_worth_it.append(size)
+        print(repr(np.array(unique_worth_it)))
+    return uniquebig
+
+
+# CUDA_GOOD_FFT_SIZES = get_good_fft_sizes()
+CUDA_GOOD_FFT_SIZES = np.flip(np.array([2048, 2000, 1944, 1920, 1800, 1728, 1620, 1600, 1536, 1500, 1458,
+                                1440, 1350, 1296, 1280, 1200, 1152, 1080, 1024, 1000, 972, 960,
+                                900, 864, 810, 800, 768, 750, 720, 648, 640, 600, 576,
+                                540, 512, 486, 480, 450, 432, 400, 384, 324, 320, 300,
+                                288, 270, 256, 216, 160, 144, 128]))
+CPU_GOOD_FFT_SIZES = np.flip(np.array([2048, 2000, 1944, 1800, 1728, 1620, 1536, 1500, 1458, 1440, 1350,
+       1296, 1200, 1152, 1080, 1024, 1000,  972,  900,  864,  810,  768,
+        750,  720,  648,  640,  600,  576,  540,  512,  500,  486,  480,
+        450,  432,  400,  384,  360,  324,  320,  300,  288,  270,  256,
+        250,  240,  216,  200,  192,  180,  162,  160,  150,  144,  128,
+        120,  108,  100,   96,   90,   80,   72,   64]))
+
+# CUDA_GOOD_FFT_SIZES = np.array((768,))
+# CPU_GOOD_FFT_SIZES = np.array((256,))
+
+class NoPhaseData(Exception):
+    pass
+class InvalidFrequency(Exception):
+    pass

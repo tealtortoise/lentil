@@ -4,9 +4,15 @@ import logging
 from matplotlib import pyplot as plt
 
 from lentil import *
+from lentil import focus_set
 from lentil.plot_utils import COLOURS
 from lentil.wavefront import estimate_wavefront_errors
 from lentil import wavefront_utils
+from lentil.wavefront_analysis import plot_wfe_data, plot_nominal_psfs
+from lentil import wavefront_analysis
+from lentil.wavefront_config import RANDOM_SEED
+import lentil.wavefront_utils
+from lentil import wavefront_test
 
 BASE_PATH = "/home/sam/nashome/MTFMapper Stuff/"
 
@@ -21,10 +27,10 @@ PATHS = [
     # '16-55mm/16mm f2.8/',
     # '16-55mm/16mm f5.6/',
 
-    '16mm/f1.4/',
-    '16mm/f2/',
-    '16mm/f2.8/',
-    '16mm/f4/',
+    # '16mm/f1.4/',
+    # '16mm/f2/',
+    # '16mm/f2.8/',
+    # '16mm/f4/',
     # '16mm/f5.6/',
     # '16mm/f8/',
     # '16mm/f11/',
@@ -42,8 +48,8 @@ PATHS = [
     # '16-55mm/18mm/f11/',
     #
 
-    # '16-55mm/27mm/f2.8/',
-    # '16-55mm/27mm/f4/',
+    '16-55mm/27mm/f2.8/',
+    '16-55mm/27mm/f4/',
     # '16-55mm/27mm/f5.6/',
     # '16-55mm/27mm/f8/',
 
@@ -102,6 +108,7 @@ PATHS = [
     # "18-55mm/55mm/f11/",
     # '23mm f1.4/',
 ]
+
 ax = None
 recalibrate = 0
 calibration = 1  # None if recalibrate else True
@@ -122,13 +129,53 @@ names = []
 # field.plot(freq=0.35, plot_type=CONTOUR2D)
 #
 # exit()
+
 apertures = []
 fns = {}
 freq = 0.28
-# focussets = [FocusSet(fallback_results_path(os.path.join(BASE_PATH, path), 3), include_all=1, use_calibration=1) for path in PATHS]
+# field = SFRField(pathname=os.path.join(BASE_PATH, "18-55mm/55mm/f11/mtfm3/DSCF8556.RAF.no_corr.sfr"), get_phase=True)
+# exit()
+# fs = SFRField(pathname="/home/sam/nashome/MTFMapper Stuff/56mm/f5.6/mtfm3/DSCF8260.RAF.no_corr.sfr", load_complex=True)
+# exit()
+
+fallbackpaths = [fallback_results_path(os.path.join(BASE_PATH, path), 3) for path in PATHS[:]]
+
+# focussets = [FocusSet(path, include_all=0, use_calibration=1, load_complex=False) for path in fallbackpaths[:1]]
+# wavefront_analysis.plot_chromatic_aberration(focussets[0])
+# focussets[0].read_wavefront_data(overwrite=True)
+# wavefront_analysis.plot_nominal_psfs(focussets[0], stop_downs=[0,1,2,3])
+# exit()
+# focussets[0].plot_sfr_vs_freq_at_point_for_each_field(2500, 2000)
+# exit()
+# focus_set.clear_numbered_autosaves(focussets[0].get_wavefront_data_path())
+#focussets[0].read_wavefront_data(overwrite=True, read_autosave=True)
+# exit()
+# wavefront_analysis.plot_nominal_psfs(focussets[0])
+# exit()
+# focussets[0].fields[13].plot_sfr_at_point(4500,2000,MERIDIONAL_IMAJ)
+# exit()
+# focussets[0].fields[15].plot_points(freq=0.25, axis=MERIDIONAL_ANGLE)
+initial = np.array([1.91342048e-03,  2.48280903e-02,  1.67862687e-02,  1.42241087e-02,  2.72742148e-03,  1.13075087e-03,  6.85835415e-04, -1.14663112e-04,  4.15021973e-05, -2.65469031e-03,  6.32943724e-03, -4.76860553e-04,  2.69996364e-03,  3.20183870e-04, -1.81168606e-03,  2.84055262e-04,  7.59997655e-04, -5.52678153e-03, -6.03509949e-03,  1.80867226e-05,  1.02042402e-03, -1.14488022e-03, -9.51656281e-06, -2.32969179e-03, -5.78473956e-04,  4.20201538e-04, -3.03927220e-03, -5.60703629e-03, -1.04249616e-03,  5.83945741e-04,  3.08436089e-03,  9.05787010e-04, -1.80680001e-03, -1.92969569e-04, -9.74365542e-04, -9.74365536e-04, -1.17940292e-04, -1.03126267e-03, -1.70651666e-03, -3.37188287e-04,  4.26668090e-05, -1.14910906e-03, -2.49515759e-03, -3.94710456e-03, -7.28123535e-03,  2.00000000e-03,  2.90897471e-04])
+
+# estimate_wavefront_errors(fallbackpaths, fs_slices=8, from_scratch=False, x_loc=700, y_loc=701,
+#                          plot_gradients_initial=None, complex_otf=False)
+estimate_wavefront_errors(fallbackpaths, fs_slices=(25,20,20,20,20), from_scratch=True, x_loc=700, y_loc=701,
+                          plot_gradients_initial=None, complex_otf=True)
+# estimate_wavefront_errors(fallbackpaths, fs_slices=3, from_scratch=False, x_loc=2000, y_loc=2000,
+#                           plot_gradients_initial=None, complex_otf=True)
+# plot_wfe_data(focussets[0])
 # (_.remove_duplicated_fields() for _ in focussets)
-estimate_wavefront_errors(wavefront_utils.build_synthetic_dataset())
-# estimate_wavefront_errors(*focussets)
+# for f in focussets:
+#     wavefront_utils.remove_last_saved_wavefront_data(f)
+# wavefront_utils.jitterstats()
+# focus_values = focus_set.FocusPositionReader(fallbackpaths[0])
+# print(focus_values['DSCF0004.RAF.no_corr.sfr'])
+# print(focus_values[4])
+# print(focus_values[44])
+# print(np.array(focus_values))
+# focus_set.estimate_focus_jitter(fallbackpaths[1], plot=2)
+# focus_set.save_focus_jitter(fallbackpaths[0], None)
+# wavefront_utils.optimise  _loca_colvolution_coeffs()
 exit()
 
 # aperture = focusset.exif.aperture

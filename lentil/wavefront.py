@@ -1,85 +1,381 @@
 import time
 import random
+import sys
 import math
+import signal
 import multiprocessing
+from multiprocessing.pool import ThreadPool
+import threading
 from collections import OrderedDict
+import cupy
 import prysm
-from scipy import optimize
+from scipy import optimize, ndimage
+import numpy as np
+import nlopt
+
+import lentil.wavefront_test
 from lentil import wavefront_utils
 from lentil.constants_utils import *
-from lentil.wavefront_utils import try_wavefront
-from lentil.wavefront_config import freqs, modelwavelengths, optimise_params, params_options, fixed_params
+from lentil.wavefront_utils import TerminateOptException, decode_parameter_tuple, encode_parameter_tuple, get_loca_kernel
+from lentil.wavefront_test import try_wavefront, plot_pixel_vignetting_loss, get_processing_details, TestSettings, TestResults
+from lentil import wavefront_test
+from lentil.wavefront_config import SPACIAL_FREQS, MODEL_WVLS, OPTIMISE_PARAMS, PARAMS_OPTIONS, FIXED_PARAMS, COST_MULTIPLIER, SAVE_RESULTS, DISABLE_MULTIPROCESSING, MAXITER, USE_CHEAP_LOCA_MODEL, CHEAP_LOCA_NORMALISE_FOCUS_SHIFT
+from lentil import wavefront_config
+from lentil.focus_set import save_wafefront_data, scan_path, read_wavefront_file
+
+keysignal = ""
+exit_signal = False
+
+# plot_pixel_vignetting_loss()
+# exit()
 
 
-lst = list(np.linspace(0, 1, 5e7))
-lenlst = len(lst)
+def _wait_for_keypress():
+    global keysignal
+    global exit_signal
+    while not exit_signal and keysignal.lower() not in ['x', 's']:
+        f = input()
+        keysignal = f
 
 
-def try_wavefront_fake(defocus=0, defocus_offset=0, defocus_step=0.1, loca=0, spca=0, basewv=0.575, fstop=2.8,
-                  base_fstop=2.8, locaref=0.575, z={}, zero_offset=0.0, plot=False, only_strehl=False):
+def _save_data(ps, initial_ps, set, dataset, fun, nit, nfev, success, starttime, autosave=False, quiet=False):
+    if not quiet:
+        print("Writing wavefront data...")
+    all_p = {}
+    all_p_init = {}
+    for p_list, dct in [(ps, all_p), (initial_ps, all_p_init)]:
+        for p, data in zip(ps[:], set[:]):
+            for key, value in p.items():
+                if key in PARAMS_OPTIONS:
+                    opt_per_focusset = PARAMS_OPTIONS[key][4]
+                elif key == 'fstop_corr':
+                    opt_per_focusset = wavefront_config.OPT_PER_FOCUSSET
+                else:
+                    opt_per_focusset = wavefront_config.OPT_SHARED
+                if opt_per_focusset == wavefront_config.OPT_PER_FOCUSSET:
+                    fstop = data.exif.aperture
+                    dct["{}@{}".format(key, fstop)] = value
+                elif opt_per_focusset == wavefront_config.OPT_SHARED:
+                    if p is ps[0]:
+                        dct[key] = value
 
-    start = time.time()
-    # for p in range(10):
-    #     power = 1.01 + p * 0.0011
-    #     q = range(99999)
+    # for p, pinit, focusset, data in zip(ps, initial_ps, set, dataset):
+    outdict = {}
+    extra = {'zernike.numbering': wavefront_config.ZERNIKE_SCHEME,
+             'prysm.samples': wavefront_config.DEFAULT_SAMPLES,
+             'fstops': [_.exif.aperture for _ in set],
+             'frequencies': ["{:.6f}".format(_) for _ in SPACIAL_FREQS],
+             'wavelengths': list(MODEL_WVLS),
+             'wfe.unit': "wavelengths (575nm)",
+             'final.cost': fun,
+             'num.iterations': nit,
+             'num.fevals': nfev,
+             'success': str(success),
+             'runtime': time.time()-starttime,
+             'x.loc': dataset[0].x_loc,
+             'y.loc': dataset[0].y_loc,
+             'cheap.loca.model':USE_CHEAP_LOCA_MODEL,
+             'cheap.loca.model.normalise':CHEAP_LOCA_NORMALISE_FOCUS_SHIFT,
+             'cost.multiplier': COST_MULTIPLIER,
+             'total.num.fevals': count}
+    # for freq, arr in zip(SPACIAL_FREQS, data.weights):
+    #     extra["Weights.frequency(cy/px):{:.6f}".format(freq)] = list(arr)
+    # for freq, arr in zip(SPACIAL_FREQS, data.chart_mtf_values):
+    #     extra["Chart.MTFs.frequency(cy/px):{:.6f}".format(freq)] = list(arr)
 
+    for data in dataset:
+        extra["fields@{}".format(data.exif.aperture)] = list(data.focus_values)
+
+    for key, value in all_p_init.items():
+        outdict["p.initial:"+key] = value
+
+    for key, value in all_p.items():
+        outdict["p.opt:"+key] = value
+
+    if hasattr(dataset[0], 'secret_ground_truth'):
+        for key, value in data.secret_ground_truth.items():
+            outdict["p.truth:"+key] = value
+
+    for key in ps[0].keys():
+        nodigitskey = key.split(".")[0]
+        try:
+            outdict["p.opt.per.fstop:"+nodigitskey] = str(PARAMS_OPTIONS[nodigitskey][4])
+        except KeyError:
+            pass
+
+    outdict.update(extra)
+
+    if autosave:
+        wavefront_data = [("Autosaved wavefront data", outdict)]
+    else:
+        wavefront_data = [("Optimised wavefront data", outdict)]
+    try:
+        path = set[0].get_wavefront_data_path(seed=wavefront_config.RANDOM_SEED)
+    except AttributeError:
+        path = "wavefront_results/"
+    # path = "/home/sam/"
+    if 1 and SAVE_RESULTS:
+        suffix = "x{}.y{}".format(dataset[0].x_loc, dataset[0].y_loc)
+        if autosave:
+            suffix += ".autosave"
+        save_wafefront_data(path, wavefront_data, suffix=suffix, quiet=False)
+    else:
+        log.warning("Results not saved!")
+
+
+def _split_array(array, split):
+    subs = []
+    lastsize = 0
+
+    for size in split:
+        subs.append(array[:, lastsize:lastsize + size])
+        lastsize += size
+    return subs
+
+
+def _calculate_cost(modelall, chartall, split, weightsall, count=1):
+    # Calculate line gradients
+    skewcosts = []
+    # meansquares = (((np.abs(modelall) - np.abs(chartall)) * 1e3) ** 2 * weightsall).mean() * 1e-4
+    realdiffs = np.real(modelall - chartall) * 1e3
+    imagdiffs = np.imag(modelall - chartall) * 4e2
+    meansquares = ((np.abs(modelall - chartall) * 1e3) ** 2 * weightsall).mean() * 1e-4
+    meansquares = ((realdiffs**2 + imagdiffs**2) * weightsall).mean() * 1e-4
+    return meansquares * wavefront_config.COST_WEIGHT_MEAN_SQUARES, 0, meansquares * wavefront_config.COST_WEIGHT_MEAN_SQUARES,0
+    models = _split_array(modelall, split)
+    charts = _split_array(chartall, split)
+    line_trends = []
+    modelpeaks = []
+    chartpeaks = []
+    quadfits = []
+    for model, chart in zip(models, charts):
+        x = np.linspace(-1, 1, model.shape[1])
+        line_err_grads = []
+        line_err_cs = []
+        derivdiffs = []
+        for modelline, chartline in zip(model, chart):
+            derivdiffs.append(np.diff(modelline) - np.diff(chartline))
+            line_diff = modelline - chartline
+            line_err_fit = np.polyfit(x, line_diff, 1)
+            quad_err_fit = np.polyfit(x, modelline - chartline, 2)
+            quadfits.append(quad_err_fit*np.array([1,1,1]))
+            linegradcost = (line_err_fit[0]**2).sum()
+            blinecost = (line_err_fit[1]**2).sum()
+            linegrad = (line_err_fit[0]**2).sum()
+            linec = (line_err_fit[1]**2).sum()
+            line_err_grads.append(linegrad)
+            line_err_cs.append(linec)
+
+            modelpeak = np.roots(np.polyder(np.polyfit(x, modelline, 2, w=chartline**2)))[0]
+            chartpeak = np.roots(np.polyder(np.polyfit(x, chartline, 2, w=chartline**2)))[0]
+            # print(modelpeak, chartpeak, line_err_fit)
+            # plt.gca()
+            # plt.plot(x, modelline)
+            # plt.plot(x, chartline)
+            # plt.show()
+            modelpeaks.append(modelpeak)
+            chartpeaks.append(chartpeak)
+        # modelskew = np.polyfit(SPACIAL_FREQS, np.clip(modelpeaks, -2, 2), 1)
+        # chartskew = np.polyfit(SPACIAL_FREQS, np.clip(chartpeaks, -2, 2), 1)
+        # skewcost = ((modelskew - chartskew) ** 2).sum() * 1e0
+
+        # skewcosts.append(skewcost)
+
+        line_trend = np.polyfit(SPACIAL_FREQS, line_err_grads, 1)
+        line_trends.append(line_trend[0])
+
+    # linegradcost = (np.array(line_err_grads) * 1e3).mean()
+    linegradcost = (line_trends[0] * 1e3)**2  # Gradient of trend
+
+    # linegradcost = ((np.array(derivdiffs)*1e3) ** 2).mean() * 1e-6
+
+    linegradcost = ((np.array(quadfits)*100)**2).mean()
+    # if count % 100 == 0:
+    #     for a, b in zip(modelpeaks, chartpeaks):
+    #         print(a * 100, b* 100)
+
+    chartweights = chartall / (chartall.mean())
+
+    peak_mnsq = (((np.array(modelpeaks) - np.array(chartpeaks))*1e3)**2).mean() * 1e-6
+
+    final = (peak_mnsq * wavefront_config.COST_WEIGHT_PEAK_LOCATIONS +
+             linegradcost * wavefront_config.COST_WEIGHT_LINE_DIFF
+             + meansquares * wavefront_config.COST_WEIGHT_MEAN_SQUARES)
+    return (final, linegradcost * wavefront_config.COST_WEIGHT_LINE_DIFF,
+             meansquares * wavefront_config.COST_WEIGHT_MEAN_SQUARES,
+            peak_mnsq * wavefront_config.COST_WEIGHT_PEAK_LOCATIONS,)
+
+
+def _jiggle_zeds(x, passed_options_ordering):
+    # print("Jiggling Zeds!")
+    # print("In params:", list(x))
+    zswaplst = [ix for ix, (s, tup) in enumerate(passed_options_ordering) if s.startswith('z')]
+    zswaprandom = zswaplst.copy()
+    random.shuffle(zswaprandom)
+    new = list(x)
+    for ix in range(len(zswaplst)):
+        new[zswaplst[ix]] = x[zswaprandom[ix]]
+    # print("Jiggled params:", new)
+    return new
+
+
+def _randomise_zeds(x, passed_options_ordering):
+    # print("Jiggling Zeds!")
+    # print("In params:", list(x))
+    zswaplst = [ix for ix, (s, tup, _) in enumerate(passed_options_ordering) if s.startswith('z')]
     sum_ = 0
-    use = [random.randint(0, lenlst-2) for _ in range(99999)]
-    for ix in use:
-        x = lst[ix]
-        sum_ += x ** 0.0012
-        sum_ *= math.log(1.23)
+    zswaprandom = zswaplst.copy()
+    # random.shuffle(zswaprandom)
+    # valid = False
+    max_ = -np.inf
+    for ix in zswaplst:
+        sum_ += x[ix]
+        if np.abs(x[ix]) > max_:
+            max_ = np.abs(x[ix])
+    for _ in range(1000):
+        new = list(x)
+        newsum = 0
+        newmax_ = -np.inf
+        for ix in zswaplst:
+            rn = (random.random()-0.5) * max_ * 2.2
+            new[ix] = rn
+            newsum += rn
+        if np.abs(newsum / sum_ - 1) < 0.1:
+            break
 
-    return tuple([0.5]*len(freqs)), time.time()-start, 2, 0.8
+    # print("Jiggled params:", new)
+    return new
 
 
-if MULTIPROCESSING > 1:
-    globalpool = None
-    
-
-def estimate_wavefront_errors(set, fs_slices=16, skip=1, processes=None, plot=True):
-    print(set[0].chart_mtf_values)
-    if hasattr(set[0], 'chart_mtf_values'):
+def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, processes=None, plot_gradients_initial=None,
+                              x_loc=None, y_loc=None, complex_otf=False):
+    if hasattr(set[0], 'merged_mtf_values'):
         dataset = set
-    elif hasattr(set[0], 'fields'):
-        dataset = wavefront_utils.pre_process_focussets(set, fs_slices, skip)
+        if not from_scratch:
+            for data in dataset:
+                try:
+                    pass
+                    entry, number = scan_path(data.get_wavefront_data_path(wavefront_config.RANDOM_SEED))
+                except FileNotFoundError:
+                    break
+                # entry, number = scan_path('wavefront_results/')
+                wfd = read_wavefront_file(entry.path)
+                if len(wfd):
+                    select_wfd = {}
+                    dct = wfd[-1][1]
+                    for key, val in dct.items():
+                        if 1 or key.lower().startswith('p.opt:z') and key[7].isdigit():
+                            select_wfd[key] = val
+                        # elif key.lower().startswith('p.opt:df_') and key[7].isdigit():
+                        #     select_wfd[key] = val
+
+                data.wavefront_data = [("", select_wfd)]
+        input = "DATASET"
+    elif hasattr(set[0], 'fields') or type(set[0]) is str:
+        dataset, focussets = wavefront_utils.pre_process_focussets(set, fs_slices, skip, avoid_ends=1, from_scratch=from_scratch,
+                                                        x_loc=x_loc, y_loc=y_loc, complex_otf=complex_otf)
+        if type(set[0]) is str:
+            set = focussets
+        input = "FOCUSSET"
     else:
         raise ValueError("Unknown input!")
 
     count = 0
+    iterations = 0
+    prev_iterations = -1
+    first_it_evals = 0
+    total_iterations = 0
+    timings = {}
+    t_prep = 0
+    t_calc = 0
+    t_run = 0
+    cpu_gpu_fftsize_boundary = wavefront_config.CPU_GPU_FFTSIZE_BOUNDARY
+    # extend_model = 15
+    last_x = None
+    lastcost = np.inf
     allsubprocesstimes = []
     allevaltimes = []
+    process_details_cache = []
     starttime = time.time()
 
+    chart_lst_sag = []
+    chart_lst_mer = []
+    for data in dataset:
+        chart_lst_sag.append(data.sag_mtf_values)
+        chart_lst_mer.append(data.mer_mtf_values)
+    strehlest_lst = [data.strehl_ests for data in dataset]
+    chart_sag_concat = np.concatenate(chart_lst_sag, axis=1)
+    chart_mer_concat = np.concatenate(chart_lst_mer, axis=1)
+    chart_mtf_means_concat = np.abs((chart_mer_concat + chart_sag_concat) * 0.5).mean(axis=0)
+    strehl_est_concat = np.concatenate(strehlest_lst, axis=0)
+
+    split = [ay.shape[0] for ay in strehlest_lst]
+    print("Focusset sizes:", split)
+
+    ######################
+    # Set up live plotting
+
     plt.show()
-    axes = plt.gca()
-    axes.set_title("Model MTF vs Chart MTF")
-    lines = []
-    lineskip = 3
-    chart_mtf_values_concat = np.concatenate([data.chart_mtf_values for data in dataset], axis=1)
+    fig, axestup = plt.subplots(1, 2, sharey=False)
+    subplots = [{}, {}]
     focus_values_sequenced = [dataset[0].focus_values]
     weights_concat = np.concatenate([f.weights for f in dataset], axis=1)
-    base_fstop = min((f.exif.aperture for f in dataset))
-
     for f in dataset[1:]:
-        new_focus_values = f.focus_values + max(focus_values_sequenced[-1] + 1)
-        focus_values_sequenced.append(new_focus_values)
+            new_focus_values = f.focus_values + max(focus_values_sequenced[-1] - f.focus_values[0])
+            focus_values_sequenced.append(new_focus_values)
+    focus_values_concat = np.concatenate(focus_values_sequenced)
 
-    focus_values_concat = np.arange(chart_mtf_values_concat.shape[1])
-    for n, (freq, chart) in enumerate(zip(wavefront_utils.freqs[::lineskip], chart_mtf_values_concat[::lineskip])):
-        color = COLOURS[n % 8]
-        axes.plot(focus_values_concat, chart, '-', label="Chart {:.2f}".format(freq), color=color )
-        line,  = axes.plot(focus_values_concat, chart, '--', label="Model {:.2f}".format(freq), color=color)
-        lines.append(line)
-    axes.legend()
+    for nplot, (axes, plotdict) in enumerate(zip(axestup, subplots)):
+        plotdict['linesmer'] = []
+        plotdict['linessag'] = []
+        if nplot == 0:
+            plot_process_fn = np.real
+            axes.set_title("Model OTF Real vs Chart")
+            axes.set_ylim(-0.3, 1)
+            axes.hlines(0, min(focus_values_concat), max(focus_values_concat))
+        else:
+            # plot_process_fn = lambda i: np.unwrap(np.angle(i))
+            plot_process_fn = np.imag
+            axes.set_title("Model OTF Imaginary vs Chart")
+            axes.set_ylim(-0.5, 0.5)
+        plotdict['plot_process_fn'] = plot_process_fn
+        for n, (freq, sag, mer, alpha) in enumerate(zip(wavefront_utils.SPACIAL_FREQS[wavefront_config.PLOT_LINES],
+                                                        chart_sag_concat[wavefront_config.PLOT_LINES],
+                                                        chart_mer_concat[wavefront_config.PLOT_LINES],
+                                                        wavefront_config.PLOT_ALPHAS)):
+            color = NICECOLOURS[n % 4]
+            axes.plot(focus_values_concat, plot_process_fn(sag), '--', label="Chart {:.2f}".format(freq), color=color, alpha=0.5)
+            axes.plot(focus_values_concat, plot_process_fn(mer), '-', label="Chart {:.2f}".format(freq), color=color, alpha=0.5)
+            linesag,  = axes.plot(focus_values_concat, plot_process_fn(sag), '--', label="Model {:.2f}".format(freq), color=color, alpha=alpha)
+            linemer,  = axes.plot(focus_values_concat, plot_process_fn(mer), '-', label="Model {:.2f}".format(freq), color=color, alpha=alpha)
+            plotdict['linessag'].append(linesag)
+            plotdict['linesmer'].append(linemer)
+        axes.legend()
+
     total_slices = len(focus_values_concat) + len(dataset)
 
-    def init():
-        pass
-        # global globalfocussets
-        # globalfocussets = focussets
+    #####################
+    # Set up process pools
 
-    if processes is None:
+    if processes is None and not DISABLE_MULTIPROCESSING:
+        prysm.zernike.cupyzcache = {}
+        if 0:
+            cupyzcache = prysm.zernike.cupyzcache
+            zcache = prysm.zernike.zcache.regular
+            for power in range(4, 10):
+                for mult in (1.0, 1.5):
+                    samples = int((2 ** power * mult) / 2 + 0.5) * 2
+                    prysm.FringeZernike(np.ones(36), samples=samples, norm=False)
+                    if samples not in cupyzcache:
+                        cupyzcache[samples] = {}
+                    for key, val in zcache[samples].items():
+                        cupyzcache[samples][key] = cupy.array(val)
+            # Build zernike cache to stay in shared memory
+            for samples in CUDA_GOOD_FFT_SIZES:
+            # for samples in range(64, 384, 2):
+                if 64 <= samples <= 64:
+                    prysm.FringeZernike(**{"z{}".format(z):0.01 for z in range(3,37)}, samples=samples, norm=False)
+        multi = True
         optimal_processes = multiprocessing.cpu_count()
         processes_opts = np.arange(4, 15)
         loop_ops = np.ceil(total_slices / processes_opts)
@@ -89,324 +385,683 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, processes=None, plot=Tr
         print(loop_ops)
         print(efficiency)
         processes = max(zip(efficiency, cpu_efficiency_favour, processes_opts))[2]
-    print("Using {} processes (for {} slices)".format(processes, total_slices))
-    # exit()
-    pool = multiprocessing.Pool(processes=processes, initializer=init)
+        print("Using {} processes (for {} slices)".format(processes, total_slices))
+        # cpupool = multiprocessing.Pool(processes=processes if wavefront_config.USE_CUDA else processes)
 
-    # Benchmark
-    print("Benchmarking!")
-    totaltime = 0
-    primeloops = 3
-    testloops = 10
-    looplst = [False] * primeloops + [True] * testloops
-    for use in looplst:
-        _, time_, _, _ = try_wavefront(z=dict(z4=0.1, z5=0.1, z6=0.1, z7=0.1))
-        if use:
-            totaltime += time_
-    singlethread_loop_time = totaltime / testloops
-    print("Average loop time {:.1f}ms".format(singlethread_loop_time * 1e3))
+        def init():
+            def shutupshop(*args, **kwargs):
+                pass
 
-    passed_options_ordering = []
+            signal.signal(signal.SIGTERM, shutupshop)
+            signal.signal(signal.SIGINT, shutupshop)
+            signal.signal(signal.SIGQUIT, shutupshop)
 
-    def prysmfit(*params, multi=True, plot=False):
-        if len(params) == 1:
-            ps = []
-            for _ in dataset:
-                ps.append({})
-            popt = {}
-            for (name, applies), val in zip(passed_options_ordering, params[0]):
-                tup = params_options[name]
-                for a in applies:
-                    if name == "fstop":
-                        mult = dataset[a].exif.aperture
-                    elif name == 'df_step':
-                        mult = dataset[a].exif.aperture #* (dataset[a].exif.aperture / base_fstop) ** 2
-                    else:
-                        mult = tup[3](base_fstop)
-                    ps[a][name] = val * mult
-                    if len(applies) == 1:
-                        popt["{}.{}".format(name, a)] = val * mult
-                if len(applies) > 1:
-                    if name == "fstop":
-                        popt["FSTOP_CORR"] = val
-                    else:
-                        popt["{}".format(name)] = val * mult
+        processes = processes
+        # pool = multiprocessing.pool.ThreadPool
+        pool = multiprocessing.Pool
+        cpupool = pool(processes=wavefront_config.CUDA_CPU_PROCESSES if wavefront_config.USE_CUDA else processes, initializer=init)
+        cudapool = pool(processes=wavefront_config.CUDA_PROCESSES, initializer=init)
 
-        else:
-            raise ValueError("BORK!")
-            p = {}
-            # popt = {}
-            # for name, val in zip(optimise_params, params[1:]):
-            #     tup = params_options[name]
-            #     mult = tup[3](data.exif.aperture)
-            #     p[name] = val * mult
-            #     popt[name] = val * mult
-        pfix = {}
-        for param in fixed_params:
-            tup = params_options[param]
-            for a, data in enumerate(dataset):
-                mult = tup[3](data.exif.aperture)
-                ps[a][param] = tup[1] * mult
-                pfix["{}.{}".format(param, a)] = tup[1] * mult
 
-        # exit()
+    else:
+        multi = False
 
-        out = []
-        basewv = 0.575
-        arglst = []
-        addarglst = []
+    initial_ps = []
+
+    last_params = None
+
+    def prysmfit(*params, plot=False, return_timing_only=False, no_process_details_cache=False):
+        """
+        Provide inner loop for scipy optimise
+
+        :param params: Iterable of parameters
+        :param plot: Explicitly plot results
+        :return: cost (unless return_dicts) is True
+        """
+        # Use outer scope for passing progress parameters
+        t = time.time()
+
+        nonlocal count
+        nonlocal initial_ps
+        nonlocal prev_iterations
+        nonlocal lastcost
+        nonlocal first_it_evals
+        nonlocal last_params
+        nonlocal t_prep
+        nonlocal t_run
+        nonlocal t_calc
+
+        # Check deltas
+        orders = []
+        names = []
+        if last_params is None:
+            last_params = params[0]
+
+        for oldval, val, (pname, _, _) in zip(last_params, params[0], passed_options_ordering):
+            try:
+                if val - oldval != 0:
+                    orders.append(int(np.log10((val - oldval) * 0.33)))
+                else:
+                    orders.append("")
+            except (ZeroDivisionError, OverflowError, ValueError):
+                orders.append("")
+            names.append(pname)
+
+        last_params = params[0]
+
+        # print(repr(params[0]))
+        ps, popt, pfix = decode_parameter_tuple(params[0], passed_options_ordering, dataset)
+
+        try:
+            onlyset = [params[1]]
+        except IndexError:
+            onlyset = list(range(len(dataset)))
+
+        arglists = [list() for _ in range(len(dataset))]
+        all_arg_lst = []
+        gpu_arg_lst = []
+        cpu_arg_lst = []
         data_for_args = []
+        all_focus_offsets = []
 
         evalstart = time.time()
-
+        refs = []
+        gpu_fftsizes = []
+        cpu_fftsizes = []
+        qs = []
         loop_base_fstop = min((p['fstop'] for p in ps))
+        index_counter = 0
+        slice_counter = -1
 
-        for data, p in zip(dataset, ps):
-            z = {}
-            for key, value in p.items():
-                if key[0] == 'z' and key[1].isdigit():
-                    z[key.upper()] = value
+        for nd, (data, p) in enumerate(zip(dataset, ps)):
+            p['cauchy_peak_x'] = data.cauchy_peak_x
+            try:
+                mono = data.hints['loca'] == 0
+            except (KeyError, AttributeError):
+                mono = False
+            dummy = nd not in onlyset
+            p['base_fstop'] = loop_base_fstop
 
-            sub_focus_values = list(data.focus_values) + [p['df_offset']]
-            for n, defocus in enumerate(sub_focus_values):
-                plottry = plot and n == (len(sub_focus_values) - 1)
-                args = [float(_) for _ in [defocus,
-                                           p['df_offset'],
-                                           p['df_step'],
-                                           p['loca'],
-                                           p['spca'],
-                                           basewv,
-                                           p['fstop'],
-                                           loop_base_fstop,
-                                           p['locaref']]] + [z, None, plottry]
+            if 'df_each' in OPTIMISE_PARAMS:
+                focus_offsets = np.zeros((len(data.focus_values),))
+                for key, value in p.items():
+                    if key.startswith("df_each."):
+                        num = int(key.split(".")[1])
+                        focus_offsets[num] = value * 10
+                all_focus_offsets.append(focus_offsets)
+                focus_values = np.add(data.focus_values, focus_offsets)
+            else:
+                focus_offsets = np.zeros((len(data.focus_values),))
+                all_focus_offsets.append(focus_offsets)
+                focus_values = data.focus_values
+            expanded_focus_values = list(focus_values)
+            if p['fstop'] == loop_base_fstop:
+                sub_focus_values = expanded_focus_values + [data.cauchy_peak_x]
+            else:
+                sub_focus_values = expanded_focus_values
 
-                # for a in args:
-                #     print(type(a))
-                # exit()
-                # if multi > 0:/
-                arglst.append(args)
+            for nf, defocus in enumerate(sub_focus_values):
+                if defocus != data.cauchy_peak_x:
+                    slice_counter += 1
+                plottry = plot and nf == (len(sub_focus_values) - 1) and p is ps[0]
+                float_p = {k_: float(v_) for k_, v_ in p.items()}
+                index_add = 10000 if defocus == data.cauchy_peak_x else 0
+
+                s = TestSettings(defocus, float_p)
+                s.mono = mono
+                s.plot = plottry
+                s.dummy = dummy
+                s.id_or_hash = index_counter + index_add
+                s.strehl_estimate = strehl_est_concat[slice_counter]
+                s.return_type = wavefront_test.RETURN_OTF if complex_otf else wavefront_test.RETURN_MTF
+                s.cpu_gpu_fftsize_boundary = cpu_gpu_fftsize_boundary
+                s.guide_mtf = chart_sag_concat.T[slice_counter], chart_mer_concat.T[slice_counter]
+                s.x_loc = x_loc
+                s.y_loc = y_loc
+                s.exif = data.exif
+
+                if s.get_processing_details().allow_cuda:
+                    gpu_arg_lst.append((s,))
+                else:
+                    cpu_arg_lst.append((s,))
+                all_arg_lst.append(s)
+
                 data_for_args.append(data)
-                # else:
-                #     raise ValueError("Bork!")
-                #     out.append(try_wavefront(*args))
-            addarglst.append(arglst.pop(-1))
+                index_counter += 1
+        t_prep += time.time() - t
+        t = time.time()
 
-        arglst.extend(addarglst)
-        # print("Number of multiprocess items {}".format(len(arglst)))
-        if multi > 0:
-            out = pool.starmap(wavefront_utils.try_wavefront, arglst)
+        if multi:
+            cpures = cpupool.starmap_async(try_wavefront, cpu_arg_lst)
+            outcuda = cudapool.starmap(try_wavefront, gpu_arg_lst)
+            cpustart = time.time()
+            out = cpures.get()
+            cpuwait = time.time() - cpustart
+            out.extend(outcuda)
         else:
-            out = []
-            for args in arglst:
-                out.append(try_wavefront(*args))
+            out = [try_wavefront(args) for args in all_arg_lst]
+            cpuwait = 0
+
+        t_run += time.time() - t
+        t = time.time()
+
+        out.sort(key=lambda tr: tr.id_or_hash)
+
         evalrealtime = time.time() - evalstart
+        if return_timing_only:
+            return evalrealtime, cpuwait
+
         allevaltimes.append(evalrealtime)
 
-        out, times, peakinesss, strehls = zip(*out)
-        bestfocuspeakiness = np.clip(peakinesss[-1], 2.0, 5.0)
-        allsubprocesstimes.extend(times)
-        strehl = strehls[-1]
-        if 1 or plot:
-            plotout = out[-len(addarglst)]
-            out = out[:-len(addarglst)]
-        # print(len(addarglst))
-        # print(np.array(out).shape)
-        # print(out)
-        # exit()
-        model_mtf_values = np.array(out).T
-        if plot:
-            # pass
-            # pupil.plot2d()
-            # plt.show()
-            # plt.plot(model_mtf_values.flatten(), label="Prysm Model {:.3f}λ Z4 step size, {:.3f}λ Z11".format(defocus_step, aberr))
-            plt.plot(model_mtf_values.flatten(), label="Prysm Model {:.3f}λ Z4 step size, {:.3f}λ Z11, {:.3f}λ Z22"
-                                                       "".format(p['df_step'], p['z9'], p['z16']))
-            plt.plot(chart_mtf_values_concat.flatten(), label="MTF Mapper data")
-            plt.xlabel("Focus position (arbitrary units)")
-            plt.ylabel("MTF")
-            plt.title("Prysm model vs chart ({:.32}-{:.2f}cy/px AUC) {}".format(LOWAVG_NOMBINS[0] / 64, LOWAVG_NOMBINS[-1] / 64, data.exif.summary))
-            plt.ylim(0, 1)
-            plt.legend()
-            plt.show()
-        global count
-        count += 1
+        for using_cuda in [False, True]:
+            timingdicts = [tr.timings for tr in out if bool(tr.used_cuda) is using_cuda]
+            if using_cuda not in timings:
+                timings[using_cuda] = {}
+            if len(timingdicts):
+                timingkeys = list(timingdicts[0].keys())
+                if timings[using_cuda] == {}:
+                    for key in timingkeys:
+                        timings[using_cuda][key] = 0
+                for dct in timingdicts:
+                    for key in timingkeys:
+                        timings[using_cuda][key] += dct[key]
 
-        offset_model_mtf_values = p['zero'] + model_mtf_values * (1.0 - p['zero'])
 
-        cost = np.sum((offset_model_mtf_values - chart_mtf_values_concat) ** 2 * weights_concat) * 1e2  # + (bestfocuspeakiness-2.0)**2
+        # _, out_sag, out_tan, times, peakinesss, strehls, fftsizes = zip(*out)
 
-        # if count % 20 == 0:
-        #     strehl = try_wavefront(*([cauchy_peak_x, p['df_offset']] + args[2:] + [True]))
-        #     print("Strehl {:.3f}".format(strehl))
-        if count % 5 == 0:
-            displaystrlst = ["#{:.0f}: {:.3f} ({:.3f}PK, {:.3f}st)".format(count, cost, bestfocuspeakiness, strehl)]
-            for key, value in popt.items():
-                substr = "{} {:.3f}".format(key.upper(), value)
-                displaystrlst.append(substr)
-            displaystrlst.append("  |  ")
-            for key, value in pfix.items():
-                substr = "{} {:.3f}".format(key.upper(), value)
-                displaystrlst.append(substr)
-            print(", ".join(displaystrlst))
+        bestfocuspeakiness = 1#np.clip(peakinesss[-1], 1.4, 10.0)
 
-        if count % 20 == 19:
-            realtime = time.time() - starttime
-            cputime = sum(allsubprocesstimes)
+        # (t_init, t_pupils, t_get_phases, t_get_fcns, t_pads, t_ffts, t_affines, t_mtfs, t_misc) = zip(*times)
+
+        # print(sum(t_init), sum(t_pupils), sum(t_get_phases),sum(t_get_fcns), sum(t_pads), sum(t_ffts), sum(t_affines), sum(t_mtfs), sum(t_misc))
+        # print(np.array(times).sum())
+
+        strehl = 1#strehls[-1]
+
+        # Strip out cauchy_x_peak test
+
+        out_sag, out_tan = zip(*[tr.otf for tr in out][:-1])
+
+        model_sag_values = np.array(out_sag).T
+        model_mer_values = np.array(out_tan).T
+
+        gpu_fftsizes = [tr.fftsize for tr in out[:-1] if tr.used_cuda]
+        cpu_fftsizes = [tr.fftsize for tr in out[:-1] if not tr.used_cuda]
+
+        # Run cost calculations
+        if p['zero'] != 0:
+            offset_model_sag_values = p['zero'] + model_sag_values * (1.0 - p['zero'])
+            offset_model_mer_values = p['zero'] + model_mer_values * (1.0 - p['zero'])
+        else:
+            offset_model_sag_values = model_sag_values
+            offset_model_mer_values = model_mer_values
+        cost_sag, _, _, _ = _calculate_cost(offset_model_sag_values, chart_sag_concat, split, weights_concat, count)
+        cost_mer, _, _, _ = _calculate_cost(offset_model_mer_values, chart_mer_concat, split, weights_concat, count)
+        cost = (cost_sag**2 + cost_mer**2) ** 0.5
+        # cost = cost_mer
+
+        # Check for parameters near bounds
+        for arg, (low, high), order in zip(params[0], optimise_bounds, passed_options_ordering):
+            try:
+                ratio = (arg - low) / (high - low)
+            except RuntimeWarning:
+                ratio = 0.5
+            if ratio < 0.03 or ratio > 0.97:
+                if iterations > prev_iterations or count % 50 == 51:
+                    scale = wavefront_config.PARAMS_OPTIONS[order[0]][5]
+                    log.warning(
+                        "{} ({}) if at {:.3f} very close to bounds {:.3f} {:.3f}".format(order[0],
+                                                                                         order[1],
+                                                                                         arg / scale,
+                                                                                         low / scale,
+                                                                                         high / scale))
+            if wavefront_config.ENFORCE_BOUNDS_IN_COST and np.abs(ratio - 0.5) * 2 > 1.01:
+                bounds_cost = float("inf")
+            else:
+                bounds_cost = 0
+
+        cost += bounds_cost
+
+        t_calc += time.time() - t
+
+        if iterations == 1 and prev_iterations == 0:
+            first_it_evals = count
+
+        if iterations > prev_iterations or count % 2 == 0:
+            # print(strehls)
             evaltime = sum(allevaltimes)
-            print("   Runtime {:.2f}s, Core CPU t: {:.2f}s, MPratio {:.1f}-{}slices, Eval Proportion {:.3f}, mean eval {:.3f}s, mean MP-loop {:.3f}s"
-                  "".format(realtime,
-                            cputime,
-                            singlethread_loop_time * (len(arglst)) * count / evaltime,
-                            len(arglst),
-                            evaltime / realtime,
-                            evaltime / count,
-                            np.mean(allsubprocesstimes)))
+            displaystrlst = []
+            headerstrlst = []
+            summarydict = OrderedDict()
+            summarydict["evals"] = count
+            summarydict["nit"] = iterations
+            if iterations < total_iterations:
+                summarydict["tot.nit"] = total_iterations
+            summarydict["   cost  "] = cost
+            # summarydict["   lgcost  "] = linegradcost
+            # summarydict["   mscost  "] = meansquarecost
+            # summarydict["  skewcost "] = skewcost
+            # summarydict["  xmodscost "] = disp_xmods_cost
+            summarydict['ev/it'] = int((count - first_it_evals) / total_iterations) if total_iterations > 0 else count
+            summarydict["peak"] = bestfocuspeakiness
+            summarydict["strl"] = strehl
 
-        if len(params) > 1:
-            return model_mtf_values.flatten()
+            endsummarydict = OrderedDict()
+            endsummarydict["cpu.q"] = len(cpu_arg_lst)
+            endsummarydict["gpu.q"] = len(gpu_arg_lst)
+            # endsummarydict["MPratio"] = singlethread_loop_time * (len(cpu_arg_lst )+len(gpu_arg_lst)) * count / evaltime
+            endsummarydict['t.eval'] = allevaltimes[-1]
+            endsummarydict['cpuwait'] = cpuwait
+            endsummarydict['cpu.fft'] = (np.array(cpu_fftsizes)**2).mean() ** 0.5
+            endsummarydict['gpu.fft'] = (np.array(gpu_fftsizes)**2).mean() ** 0.5
+            # endsummarydict['tot.loca.ext'] = int(sum(loca_split) - sum(split))
+            endsummarydict["tot.t"] = int(time.time() - starttime)
 
-        if plot or count % 10 == 1:
-            for n, (freq, model, line) in enumerate(zip(wavefront_utils.freqs[::lineskip], offset_model_mtf_values[::lineskip], lines)):
-                # color = COLOURS[n % 8]
-                # axes.plot(focus_values, chart, '-', label="Chart", color=color )
-                line.set_ydata(model)
-            # plt.ion()
-            plt.draw()
-            plt.pause(1e-6)
-        return cost
+            for order, name in zip(orders, names):
+                endsummarydict['delta.{}'.format(name)] = order
 
-    initial_guess = []
-    optimise_bounds = []
-    for paramname in optimise_params:
-        per_focusset = params_options[paramname][4]
-        tup = params_options[paramname]
-        low = tup[0]
-        initial = tup[1]
-        high = tup[2]
-        if per_focusset:
-            for a, data in enumerate(dataset):
-                passed_options_ordering.append((paramname, (a,)))
-                if paramname == 'df_offset':
-                    initial = data.cauchy_peak_x
-                    low = min(data.focus_values) - 3
-                    high = max(data.focus_values) + 3
-                initial_guess.append(initial)
-                optimise_bounds.append((low, high))
+            for key, value in list(summarydict.items()) + \
+                              list(popt.items()) + \
+                              list(endsummarydict.items()) + \
+                              [("  |", 0)] + list(pfix.items()):
+                if key.startswith("df_"):
+                    key = key[3:]
+                if type(value) is int:
+                    vallen = len("{:d}".format(-np.abs(value)))
+                    valtype = "int"
+                elif type(value) is str:
+                    vallen = len(value)
+                    valtype = "str"
+                else:
+                    vallen = len("{:.3f}".format(-np.abs(value)))
+                    valtype = "float"
+                width = max(vallen, len(key)) + 0
+                headformatstr = r"{:^"+str(width)+r"}"
+                if valtype == "int":
+                    valformatstr = r"{:"+str(width)+r"d}"
+                elif valtype == "str":
+                    valformatstr = r"{:"+str(width)+r"}"
+                else:
+                    valformatstr = r"{:"+str(width)+r".3f}"
 
-        else:
-            passed_options_ordering.append((paramname, tuple(range(len(dataset)))))
-            initial_guess.append(initial)
-            optimise_bounds.append((low, high))
+                headerstrlst.append(headformatstr.format(key.lower()))
+                displaystrlst.append(valformatstr.format(value))
+            if count % 24 == 0:
+                print()
+                for using_cuda in [False, True]:
+                    strlist = ["GPU" if using_cuda else "CPU"]
+                    total = 0
+                    tlist = list(timings[using_cuda].items())
+                    tlist.append(("t_prep", t_prep))
+                    tlist.append(("t_run", t_run))
+                    tlist.append(("t_calc", t_calc))
+                    for k, v in tlist:
+                        stri = "{}: {:.0f}".format(k, v)
+                        strlist.append(stri.ljust(15))
+                        if k not in ['t_run']:
+                            total += v
+                    strlist.insert(0, "Total: {:.0f}".format(total).ljust(20))
+                    if using_cuda is False:
+                        strlist.append("")
+                    print(" ".join(strlist))
+                np.set_printoptions(linewidth=1000)
+                print(repr(params[0]))
+                print()
+                print("  ".join(headerstrlst))
+            print("  ".join(displaystrlst))
 
-    print(initial_guess)
-    print(optimise_bounds)
-    print(passed_options_ordering)
-    # exit()
-    curve_fit_bounds = list(zip(*optimise_bounds))
-    # print(curve_fit_bounds)
-        # print(paramname, mult, tup)
-    # print(initial_guess)
-    # print(optimise_bounds)
-    # exit()
-    # exit()
+        if plot or iterations > prev_iterations  or count % 2 == 0:
+            for nplot, (axes, plotdict) in enumerate(zip(axestup, subplots)):
+                    for n, (freq, model_sag, model_mer, line_sag, line_mer) in enumerate(zip(
+                                                                wavefront_utils.SPACIAL_FREQS[wavefront_config.PLOT_LINES],
+                                                                offset_model_sag_values[wavefront_config.PLOT_LINES],
+                                                                offset_model_mer_values[wavefront_config.PLOT_LINES],
+                                                                plotdict['linessag'], plotdict['linesmer'])):
+                        # color = COLOURS[n % 8]
+                        # axes.plot(focus_values, chart, '-', label="Chart", color=color )
+                        plot_process_fn = plotdict['plot_process_fn']
+                        line_sag.set_ydata(plot_process_fn(model_sag))
+                        line_mer.set_ydata(plot_process_fn(model_mer))
+                    plt.draw()
+                    plt.pause(1e-6)
+        count += 1
+        prev_iterations = iterations
+        lastcost = cost
+        return cost * wavefront_config.HIDDEN_COST_SCALE
 
-    # initial_guess = [11.10561494,  0.39775171,  0.09595456, -0.0986406 , -0.17167902,
-    #    -2.32231102,  0.64717264,  0.58967162]
-    # 595: 2.311 in 22.59s, DEFOCUS_OFFSET 11.324, DEFOCUS_STEP 0.107, Z9 -0.088, Z16 -0.011, Z25 -0.009, Z36 0.024, LOCA 0.265, LOCAREF 0.541,   |  , Z7 0.000, Z8 0.000, APERTURE 2.940, SPCA 0.004, ZERO_OFFSET 0.005
-    # 56mm all [14.29142161,  8.96481699,  4.86504373,  0.54432487,  0.36725587,
-    #    0.23819082, -0.03285181,  0.05561526, -0.68575977, -0.15878104,
-    #   -2.25549849, -2.5       , -0.93305931,  0.5       ]
-    # 4156: 19.033 (2.000PK, 0.554st) in 82.75s, DEFOCUS_OFFSET(0) 14.291, DEFOCUS_OFFSET(1) 8.965, DEFOCUS_OFFSET(2) 4.865, DEFOCUS_STEP(0) 0.653, DEFOCUS_STEP(1) 1.028, DEFOCUS_STEP(2) 1.334, Z9(0) -0.027, Z9(1) -0.027, Z9(2) -0.027, Z16(0) 0.046, Z16(1) 0.046, Z16(2) 0.046, Z25(0) -0.571, Z25(1) -0.571, Z25(2) -0.571, Z36(0) -0.132, Z36(1) -0.132, Z36(2) -0.132, LOCA(0) -1.880, LOCA(1) -2.083, LOCA(2) -0.778, LOCAREF(0) 0.500, LOCAREF(1) 0.500, LOCAREF(2) 0.500,   |  , Z7(0) 0.000, Z7(1) 0.000, Z7(2) 0.000, Z8(0) 0.000, Z8(1) 0.000, Z8(2) 0.000, APERTURE(0) 1.200, APERTURE(1) 2.800, APERTURE(2) 5.600, SPCA(0) 0.008, SPCA(1) 0.004, SPCA(2) 0.002, ZERO_OFFSET(0) 0.005, ZERO_OFFSET(1) 0.005, ZERO_OFFSET(2) 0.005
+    initial_guess, optimise_bounds, passed_options_ordering = encode_parameter_tuple(dataset)
 
+    if plot_gradients_initial is not None and plot_gradients_initial is not False:
+        baseline = np.array(plot_gradients_initial) * wavefront_config.SCALE_EXTRA[:len(plot_gradients_initial)]
+        deltainc = 1e-9
+        numvals = 7
+        deltas = np.linspace(-deltainc * (numvals-1) / 2, deltainc * (numvals-1) / 2, numvals)
+        # deltas = np.linspace(0, deltainc * (numvals), numvals)
+        costs_lst = []
+        legends = []
+        gradients = []
+        jiggles = []
+        for axis in range(len(baseline)):
+            print("Testing {}".format(passed_options_ordering[axis][0]))
+            costs = []
+            param_array = deltas + baseline[axis]
+            for param in param_array:
+                params = baseline.copy()
+                params[axis] = param
+                cost = prysmfit(params)
+                costs.append(cost)
+                # time.sleep(1)
+            costs_lst.append(costs)
+            poly = np.polyfit(deltas, costs, 2)
+            polyvals = np.polyval(poly, deltas)
+            mean_diff = np.diff(costs).mean()
+            polyfit_rmse = ((polyvals - costs)**2).mean() ** 0.5 / mean_diff
+            # print(polyfit_rmse)
+            # plt.plot(polyvals)
+            # plt.plot(costs)
+            # plt.show()
+            gradients.append(poly[1])
+            jiggles.append(polyfit_rmse)
+            legends.append("{}".format(passed_options_ordering[axis][0]))
+        gradients = np.array(gradients) / np.mean(np.abs(gradients))
+        print(repr(gradients))
+        for axis, grad, jiggle in zip(range(len(baseline)), gradients, jiggles):
+            print("Axis {}, gradient {:.3f}, jiggles {:.2f}"
+                  .format("{}".format(passed_options_ordering[axis][0]), grad, jiggle))
 
-    #90mm
-    # 4382: 10.469 (2.000PK, 0.903st) in 55.65s, DEFOCUS_OFFSET(0) 16.777, DEFOCUS_OFFSET(1) 11.752, DEFOCUS_OFFSET(2) 7.617, DEFOCUS_STEP(0) 0.272, DEFOCUS_STEP(1) 0.380, DEFOCUS_STEP(2) 0.527, Z9(0) 0.057, Z9(1) 0.057, Z9(2) 0.057, Z16(0) -0.067, Z16(1) -0.067, Z16(2) -0.067, Z25(0) -0.044, Z25(1) -0.044, Z25(2) -0.044, Z36(0) -0.091, Z36(1) -0.091, Z36(2) -0.091, LOCA(0) -0.943, LOCA(1) -0.943, LOCA(2) -0.943, LOCAREF(0) 0.601, LOCAREF(1) 0.601, LOCAREF(2) 0.601,   |  , Z7(0) 0.000, Z7(1) 0.000, Z7(2) 0.000, Z8(0) 0.000, Z8(1) 0.000, Z8(2) 0.000, APERTURE(0) 2.000, APERTURE(1) 2.800, APERTURE(2) 4.000, SPCA(0) 0.005, SPCA(1) 0.004, SPCA(2) 0.003, ZERO_OFFSET(0) 0.005, ZERO_OFFSET(1) 0.005, ZERO_OFFSET(2) 0.005
-#[16.77715379, 11.75201761,  7.61670147,  0.13618264,  0.13563434,
-        #0.1318735 ,  0.11470272, -0.1332087 , -0.0883821 , -0.18195644,
-       #-1.88663101,  0.60059712]
-    starttime = time.time()
-    if 1:
-        if 1:
-            options = {'ftol': 1e-6,
-                       #'eps': 1e-06,
-                       'gtol': 1e-2,
-                       'maxiter': 1}
-        else:
-            options = {}
-        # opt = optimize.minimize(prysmfit, initial_guess, method="trust-constr", bounds=bounds)
-        # prysmfit([14.39457095,  0.47370952,  0.04539592, -0.119297  , -0.20086028,
-       # -1.28074449,  0.        ,  0.5       ], plot=True)
-       #  exit()
-       #  initial_guess = [15.45797755,  9.07694616,  9.67888576,  0.02916234,  0.05286887, # 60mm
-       #  0.04945902,  0.04119428, -0.15280071,  0.01580217,  0.14503988,
-       #  1.178283  , -3.62798686]
-       #  initial_guess = [20.03858813, 11.03007915,  7.96193796,  6.67643635,  0.16533184, #16mm x 4
-       #  0.15092223,  0.16195945,  0.16758065, -0.14156922, -0.39328133,
-       #  0.22280391, -0.09829078,  1.23939573,  2.95968507]
-        opt = optimize.minimize(prysmfit, initial_guess, method="L-BFGS-B", bounds=optimise_bounds,
-                                options=options)
-        print('==== FINISHED ====')
-        print('==== FINISHED ====')
-        print('==== FINISHED ====')
-        print('==== FINISHED ====')
-
-        for data in dataset:
-            if hasattr(data, 'secret_ground_truth'):
-                print("Dataset has secret ground truth!")
-                print(data.secret_ground_truth)
-        print(opt)
+        plt.cla()
+        for costs, legend in zip(costs_lst, legends):
+            plt.plot(deltas, costs, marker='v', label=legend)
+        plt.legend()
         plt.show()
+        return
 
-        prysmfit(opt.x, multi=False, plot=True)
-        for solve, (name, applies) in zip(opt.x, passed_options_ordering):
-            print(solve, name, applies)
-            if name == 'df_step':
-                est_defocus_rms_wfe_step = solve
-                break
+    print(passed_options_ordering)
+    print("Initial guess", repr(np.array(initial_guess)))
+
+    # prysmfit(initial_guess)
+    # prysmfit(initial_guess)
+    prysmfit(initial_guess)
+    # plt.show()
+    # exit()
+
+    # Profile and fine tune
+    if wavefront_config.USE_CUDA and wavefront_config.CPU_GPU_FFTSIZE_BOUNDARY_FINETUNE:
+        for _ in range(5):
+            prysmfit(initial_guess, return_timing_only=True)
+        hithigh  = False
+        hitlow = False
+        while 1:
+            cpuwaits = []
+            evals = []
+            print("Trying fftsize boundary {}".format(cpu_gpu_fftsize_boundary))
+            for _ in range(3):
+                eval, wait = prysmfit(initial_guess, return_timing_only=True, no_process_details_cache=True)
+                cpuwaits.append(wait)
+                evals.append(eval)
+            meaneval = np.mean(evals)
+            meanwait = np.mean(cpuwaits)
+            print(meaneval, meanwait)
+            if meanwait < 0.1:
+                cpu_gpu_fftsize_boundary += 16
+                if hithigh:
+                    break
+                hitlow = True
+            else:
+                cpu_gpu_fftsize_boundary -= 16
+                if hitlow:
+                    break
+                hithigh = True
+        print("Using {} FFTsize boundary".format(cpu_gpu_fftsize_boundary))
+
+
+    starttime = time.time()
+    success = None
+    nfev = None
+    initial_ps, _, _ = decode_parameter_tuple(initial_guess, passed_options_ordering, dataset)
+
+    # _save_data(initial_ps,initial_ps,set, dataset, 0,0,0,0,0)
+    for p in initial_ps:
+        print(p)
+    # exit()
+    #     p['base_fstop'] = min(p['fstop'] for p in initial_ps)
+    #     plt.plot(strehl_est_concat)
+    #     plt.plot(chart_mtf_means_concat)
+    #     plt.plot([get_processing_details(strehl, mtfm, p, mtf=(sag, mer))[0] / 500 for
+    #               strehl, mtfm, sag, mer in
+    #               zip(strehl_est_concat, chart_mtf_means_concat, chart_sag_concat.T, chart_mer_concat.T)],
+    #              label="fftsize")
+    #     plt.plot([get_processing_details(strehl, mtfm, p, mtf=(sag, mer))[1] / 500 for
+    #               strehl, mtfm, sag, mer in
+    #               zip(strehl_est_concat, chart_mtf_means_concat, chart_sag_concat.T, chart_mer_concat.T)],
+    #              label="samples")
+    #     plt.legend()
+    #     plt.show()
+    # exit()
+
+    # print(initial_ps[0])
+    # initial_ps[0]['base_fstop'] = initial_ps[0]['fstop']
+    # print(dataset[0].cauchy_peak_x)
+    # wavefront_utils.plot_nominal_psf(initial_ps[0])
+    # exit()
+    fun = None
+
+    # Plot Zs
+    # y = []
+    # x = []
+    # for key, val in initial_ps[0].items():
+    #     if key.startswith('z') and key[1].isdigit():
+    #         x.append(int(key[1:]))
+    #         y.append(val)
+    # plt.cla()
+    # plt.plot(x, y)
+    # plt.show()
+    # exit()
+    def compare_hidden(ps):
+        print("{:14}: {:>9} {:>9} {:>9}".format("Param", "Fit", "Truth", "Error"))
+        print("-------------------------------------------------")
+
+        for key in ps[0].keys():
+            fits = [p[key] for p in ps]
+
+            if key == 'df_step':
+                est_defocus_rms_wfe_step = fits[0]
+
+            nodigitskey = key.split(".")[0]
+            if key == 'fstop_corr':
+                per_focusset = PARAMS_OPTIONS['fstop'][4]
+            else:
+                per_focusset = PARAMS_OPTIONS[nodigitskey][4]
+            try:
+                truths = [data.secret_ground_truth[key] for data in dataset]
+            except KeyError:
+                truths = [0] * len(dataset)
+
+            for fit, truth in zip(fits, truths):
+                error = fit - truth
+                print("{:14}: {:9.3f} {:9.3f} {:9.3f}".format(key, fit, truth, error))
+                if not per_focusset:
+                    break
+        else:
+            for fit in fits:
+                print("{:14}: {:9.3f}".format(key, fit))
+                if not per_focusset:
+                    break
+
+    if 1:
+        options = {#'ftol': 1e-6,
+                   # 'eps': 1e-06 * wavefront_config.DEFAULT_SCALE,
+                   #'gtol': 1e-2,
+                   #  'xtol':1e-4,
+                   # 'maxcor':100,
+                   'maxiter': MAXITER}
+
+        def callback(x, *args):
+            nonlocal total_iterations
+            nonlocal iterations
+            nonlocal last_x
+            global keysignal
+            ps, popt, pfix = decode_parameter_tuple(x, passed_options_ordering, dataset)
+            _save_data(ps, initial_ps,set, dataset, lastcost,iterations+1, count, False, starttime, True, True)
+            last_x = x
+            total_iterations += 1
+            iterations += 1
+            if lastcost < 0.02 or keysignal.lower() in ['s', 'a', 'x']:
+                if keysignal.lower() == 'a':
+                    keysignal = ""
+                print(keysignal)
+                raise TerminateOptException()
+            return  # lastcost > 1.0
+
+        fun = np.inf
+        bestfun = np.inf
+        while fun > 0.02 and keysignal.lower() not in ['x', 's']:
+
+            iterations = 0
+            try:
+                # raise TerminateOptException()
+                # opt = optimize.basinhopping(prysmfit,
+                #                             initial_guess,
+                #                             minimizer_kwargs={'method':'L-BFGS-B', 'options':options, 'callback':callback},
+                #                             callback=callback_b)
+                                            # )
+
+                # opto = nlopt.opt(nlopt.LD_SLSQP)
+                # opto.set_min_objective(prysmfit)
+
+                # watcher = threading.Thread(target=_wait_for_keypress)
+                # watcher.start()
+                hidden = False
+                for data in dataset:
+                    if hasattr(data, 'secret_ground_truth'):
+                        print("Dataset has secret ground truth!")
+                        print(data.secret_ground_truth)
+                        hidden = True
+
+                def close_pools_and_exit(*args, **kwargs):
+                    cudapool.close()
+                    cpupool.close()
+                    cudapool.terminate()
+                    cpupool.terminate()
+                    cudapool.join()
+                    cpupool.join()
+                    exit()
+
+                def raise_exit_flag(*args, **kwargs):
+                    global keysignal
+                    global exit_signal
+                    keysignal = "s"
+                    print("EXITING!!")
+
+                signal.signal(signal.SIGTERM, raise_exit_flag)
+                signal.signal(signal.SIGINT, raise_exit_flag)
+                signal.signal(signal.SIGQUIT, raise_exit_flag)
+
+                initial_ps, _, _ = decode_parameter_tuple(initial_guess, passed_options_ordering, dataset)
+
+                # opt = optimize.basinhopping(prysmfit, initial_guess,
+                #                             minimizer_kwargs=dict(method='L-BFGS-b', options=options, bounds=optimise_bounds,callback=callback),
+                #                             callback=callback_b)
+                # opt = optimize.minimize(prysmfit, initial_guess, method="SLSQP", bounds=optimise_bounds,
+                #                     options=options, callback=callback)
+                # opt = optimize.minimize(prysmfit, initial_guess, method="Nelder-Mead",# bounds=optimise_bounds,
+                #                         options=dict(maxiter=5000, maxfev=15000), callback=callback)
+                # opt = optimize.minimize(prysmfit, initial_guess, method="COBYLA", bounds=optimise_bounds,
+                #                         options=dict(), callback=callback)
+                opt = optimize.minimize(prysmfit, initial_guess, method="L-BFGS-B", bounds=optimise_bounds,
+                                        options=options, callback=callback)
+                # opt = optimize.minimize(prysmfit, initial_guess, method="trust-constr", bounds=optimise_bounds,
+                #                         options=dict(), callback=callback)
+                fun = opt.fun / wavefront_config.HIDDEN_COST_SCALE
+                x = opt.x
+                try:
+                    nit = opt.nit
+                except AttributeError:
+                    nit = iterations
+                nfev = opt.nfev
+                print(opt)
+                success = opt.success
+            except TerminateOptException:
+                fun = lastcost
+                nit = iterations
+                nfev = count
+                x = last_x
+                success = True
+
+            print('==== FINISHED ====')
+
+            ps, popt, pfix = decode_parameter_tuple(x, passed_options_ordering, dataset)
+
+            # print(initial_ps)
+
+            if (fun < bestfun or keysignal.lower() in ['s']) and keysignal.lower() not in ['a', 'x']:
+                bestfun = fun
+                _save_data(ps, initial_ps, set, dataset, fun, nit, nfev, success, starttime)
+
+            if hidden:
+                compare_hidden(ps)
+                wavefront_utils.plot_nominal_psf(ps[0], dataset[0].secret_ground_truth)
+            # Shuffle zs around
+            old_initial = initial_guess.copy()
+
+            initial_guess = _randomise_zeds(x, passed_options_ordering)
+
+            new_initial_p = {}
+            old_initial_p = {}
+            inc = 0
+            for paramname, applies, fieldapplies in passed_options_ordering:
+                if len(applies) > 1:
+                    add = ""
+                else:
+                    add = "{:d}".format(applies[0])
+                new_initial_p[paramname+add] = initial_guess[inc]
+                old_initial_p[paramname+add] = old_initial[inc]
+                inc += 1
+
+            # print("Not Jiggled:", old_initial_p)
+            # print("Jiggled:", new_initial_p)
+
+            close_pools_and_exit()
+
     else:
-        fit, _ = optimize.curve_fit(prysmfit, list(focus_values)*len(wavefront_utils.freqs), chart_mtf_values.flatten(),
+        fit, _ = optimize.curve_fit(prysmfit, list(focus_values) * len(wavefront_utils.SPACIAL_FREQS), chart_mtf_values.flatten(),
                                     p0=initial_guess, sigma=1.0 / weights.flatten(), bounds=curve_fit_bounds)
         print(fit)
         prysmfit(0, *fit, plot=1)
 
         est_defocus_rms_wfe_step = fit[1]
 
+    if opt.success and keysignal.lower() not in ['x', 'a']:
+        est_defocus_pv_wfe_step = est_defocus_rms_wfe_step * 2 * 3 ** 0.5
 
+        log.info("--- Focus step size estimates ---")
+        log.info("    RMS Wavefront defocus error {:8.4f} λ".format(est_defocus_rms_wfe_step))
 
-    # log.debug("Fn fit peak is {:.3f} at {:.2f}".format(fitted_params[0], fitted_params[1]))
-    # log.debug("Fn sigma: {:.3f}".format(fitted_params[2]))
+        longitude_defocus_step_um = est_defocus_pv_wfe_step * dataset[0].exif.aperture**2 * 8 * 0.55
+        log.info("    Image side focus shift      {:8.3f} µm".format(longitude_defocus_step_um))
 
-    # ---
-    # Estimate defocus step size
-    # ---
-    # if "_fixed_defocus_step_wfe" in dir(focusset):
-    #     est_defocus_rms_wfe_step = focusset._fixed_defocus_step_wfe
-    est_defocus_pv_wfe_step = est_defocus_rms_wfe_step * 2 * 3 ** 0.5
+        na = 1 / (2.0 * dataset[0].exif.aperture)
+        theta = np.arcsin(na)
+        coc_step = np.tan(theta) * longitude_defocus_step_um * 2
 
-    log.info("--- Focus step size estimates ---")
-    log.info("    RMS Wavefront defocus error {:8.4f} λ".format(est_defocus_rms_wfe_step))
+        focal_length_m = dataset[0].exif.focal_length * 1e-3
 
-    longitude_defocus_step_um = est_defocus_pv_wfe_step * dataset[0].exif.aperture**2 * 8 * 0.55
-    log.info("    Image side focus shift      {:8.3f} µm".format(longitude_defocus_step_um))
+        def get_opposide_dist(dist):
+            return 1.0 / (1.0 / focal_length_m - 1.0 / dist)
 
-    na = 1 / (2.0 * dataset[0].exif.aperture)
-    theta = np.arcsin(na)
-    coc_step = np.tan(theta) * longitude_defocus_step_um * 2
+        lens_angle_of_view = dataset[0].exif.angle_of_view
+        # print(lens_angle_of_view)
+        subject_distance = CHART_DIAGONAL * 0.5 / np.sin(lens_angle_of_view / 2)
+        image_distance = get_opposide_dist(subject_distance)
 
-    focal_length_m = dataset[0].exif.focal_length * 1e-3
+        log.info("    Subject side focus shift    {:8.2f} mm".format((get_opposide_dist(image_distance-longitude_defocus_step_um *1e-6) - get_opposide_dist(image_distance)) * 1e3))
+        log.info("    Blur circle  (CoC)          {:8.2f} µm".format(coc_step))
 
-    def get_opposide_dist(dist):
-        return 1.0 / (1.0 / focal_length_m - 1.0 / dist)
+        log.info("Nominal subject distance {:8.2f} mm".format(subject_distance * 1e3))
+        log.info("Nominal image distance   {:8.2f} mm".format(image_distance * 1e3))
 
-    lens_angle_of_view = dataset[0].exif.angle_of_view
-    # print(lens_angle_of_view)
-    subject_distance = CHART_DIAGONAL * 0.5 / np.sin(lens_angle_of_view / 2)
-    image_distance = get_opposide_dist(subject_distance)
-
-    log.info("    Subject side focus shift    {:8.2f} mm".format((get_opposide_dist(image_distance-longitude_defocus_step_um *1e-6) - get_opposide_dist(image_distance)) * 1e3))
-    log.info("    Blur circle  (CoC)          {:8.2f} µm".format(coc_step))
-
-    log.info("Nominal subject distance {:8.2f} mm".format(subject_distance * 1e3))
-    log.info("Nominal image distance   {:8.2f} mm".format(image_distance * 1e3))
-
-    return est_defocus_rms_wfe_step, longitude_defocus_step_um, coc_step, image_distance, subject_distance, dataset[0].cauchy_peak_y
+    cpupool.close()
+    global exit_signal
+    exit_signal = True
+    return
+    return est_defocus_rms_wfe_step, longitude_defocus_step_um, coc_step, image_distance, subject_distance# , dataset[0].cauchy_peak_y

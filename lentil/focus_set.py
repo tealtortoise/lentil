@@ -1,17 +1,17 @@
 import csv
-import math
-import os
-import logging
 import multiprocessing
+import os
 from logging import getLogger
 from operator import itemgetter
-from scipy import optimize, interpolate, stats
 
-from lentil.sfr_point import SFRPoint
+import numpy
+from scipy import stats
+
+from lentil.sfr_point import FFTPoint
 from lentil.sfr_field import SFRField, NotEnoughPointsException
 from lentil.plot_utils import FieldPlot, Scatter2D, COLOURS
 from lentil.constants_utils import *
-import lentil.wavefront
+# import lentil.wavefront
 
 import prysm
 
@@ -70,21 +70,114 @@ class FitError(Exception):
         self.fitpos = fitpos
 
 
+class FocusPositionReader(list):
+    def __init__(self, rootpath, fallback=True):
+        print(rootpath)
+        filepath = os.path.join(rootpath, "focus_positions.csv")
+        ids = []
+        names = []
+        values = []
+        self.namedict = {}
+        self.fileid_dict = {}
+        current = True if fallback else False
+        try:
+            with open(filepath, 'r') as file:
+                reader = csv.reader(file, delimiter=" ", quotechar='"')
+                for row in reader:
+                    if row[0] == '#':
+                        continue
+                    elif row[0].lower() == "code_version" and not fallback:
+                        # If old estimation code used ignore file to trigger re-estimation
+                        try:
+                            if float(row[1]) < CURRENT_JITTER_CODE_VERSION:
+                                raise FileNotFoundError()
+                        except (TypeError, IndexError):
+                            raise FileNotFoundError()
+                        current = True
+                        continue
+                    elif len(row) == 3:
+                        id, name, value = row
+                    else:
+                        log.warning("Unknown row {}".format(str(row)))
+                        continue
+                    ids.append(id)
+                    names.append(name)
+                    values.append(float(value))
+                    self.namedict[name] = float(value)
+                    self.fileid_dict[id] = float(value)
+            if not current:
+                raise FileNotFoundError()
+        except (FileNotFoundError, ) as e:
+            if not fallback:
+                raise e
+            log.warning("No focus position file found, falling back to counting!")
+            files = []
+            for entry in os.scandir(rootpath):
+                if entry.name.lower().endswith(".sfr"):
+                    digits = "".join((char for char in entry.name if char.isdigit()))
+                    files.append((int(digits), entry.name))
+            files.sort()
+            for n, (id, file) in enumerate(files):
+                self.namedict[file] = n
+                self.fileid_dict[id] = n
+                values.append(n)
+
+        super().__init__(values)
+
+    def __getitem__(self, item):
+        if type(item) is int:
+            try:
+                return super().__getitem__(item)
+            except IndexError:
+                return item
+        if item in self.namedict:
+            return self.namedict[item]
+        return self.fileid_dict.get(item, None)
+
+
+def read_wavefront_file(path):
+    with open(path, 'r') as file:
+        reader = csv.reader(file, delimiter=" ", quotechar='"')
+        lst = []
+        for row in reader:
+            row = [cell for cell in row if cell != ""]
+            if len(row) == 0:
+                continue
+            if len(row) == 1:
+                if len(row[0]) > 0:
+                    if 'wavefront data' in row[0].lower():
+                        dct = {}
+                        lst.append((row[0], dct))
+                    else:
+                        continue
+            elif len(row) == 2:
+                value = row[1]
+                dct[row[0]] = tryfloat(value)
+            else:
+                rowdata = row[1:]
+                dct[row[0]] = [tryfloat(_) for _ in rowdata]
+    print("Read from path '{}'".format(path))
+    return lst
+
 class FocusSet:
     """
     A range of fields with stepped focus, in order
     """
 
-    def __init__(self, rootpath=None, rescan=False, include_all=False, use_calibration=True):
+    def __init__(self, rootpath=None, rescan=False, include_all=False, use_calibration=True, load_focus_data=True,
+                 load_complex=False):
         global globalfocusset
         globalfocusset = self
         global globalpool
-        self.fields = []
+        self.rootpath = rootpath
+        fields = []
         self.lens_name = rootpath
-        self._focus_data = None
         self.focus_scale_label = "Focus position (arbritary units)"
         calibration = None
         self.calibration = None
+        self._focus_data = None
+        self.focus_scaling_fn = None
+        self.wavefront_data = []
         self.base_calibration = np.ones((64,))
         try:
             if len(use_calibration) == 32:
@@ -109,71 +202,89 @@ class FocusSet:
         if rootpath is None:
             log.warning("Warning, initialising with no field data!")
             return
-        try:
+        # try:
             # Attempt to open lentil_data
-            with open(os.path.join(rootpath, "slfjsadf" if rescan or include_all else "lentil_data.csv"), 'r')\
-                    as csvfile:
-                print("Found lentildata")
-                csvreader = csv.reader(csvfile, delimiter=',', quotechar='|')
-                for row in csvreader:
-                    if row[0] == "Relevant filenames":
-                        stubnames = row[1:]
-                    elif row[0] == "lens_name":
-                        self.lens_name = row[1]
-                pathnames = [os.path.join(rootpath, stubname) for stubname in stubnames]
-                exif = EXIF(pathnames[0])
-                self.exif = exif
-                for pathname in pathnames:
-                    try:
-                        self.fields.append(SFRField(pathname=pathname, calibration=calibration, exif=exif))
-                    except NotEnoughPointsException:
-                        pass
-        except FileNotFoundError:
-            print("Did not find lentildata, finding files...")
-            with os.scandir(rootpath) as it:
-                for entry in it:
-                    try:
-                        entrynumber = int("".join([s for s in entry.name if s.isdigit()]))
-                    except ValueError:
+            # with open(os.path.join(rootpath, "slfjsadf" if rescan or include_all else "lentil_data.csv"), 'r')\
+            #         as csvfile:
+            #     print("Found lentildata")
+            #     csvreader = csv.reader(csvfile, delimiter=',', quotechar='|')
+            #     for row in csvreader:
+            #         if row[0] == "Relevant filenames":
+            #             stubnames = row[1:]
+            #         elif row[0] == "lens_name":
+            #             self.lens_name = row[1]
+            #     pathnames = [os.path.join(rootpath, stubname) for stubname in stubnames]
+            #     exif = EXIF(pathnames[0])
+            #     self.exif = exif
+            #     for pathname in pathnames:
+            #         try:
+            #             self.fields.append(SFRField(pathname=pathname, calibration=calibration, exif=exif))
+            #         except NotEnoughPointsException:
+            #             pass
+        # except FileNotFoundError:
+        #     print("Did not find lentildata, finding files...")
+        with os.scandir(rootpath) as it:
+            for entry in it:
+                try:
+                    entrynumber = int("".join([s for s in entry.name if s.isdigit()]))
+                except ValueError:
+                    continue
+
+                if entry.is_dir():
+                    fullpathname = os.path.join(rootpath, entry.path, SFRFILENAME)
+                    sfr_file_exists = os.path.isfile(fullpathname)
+                    if not sfr_file_exists:
                         continue
+                    stubname = os.path.join(entry.name, SFRFILENAME)
+                elif entry.is_file() and entry.name.endswith("sfr"):
+                    print("Found {}".format(entry.path))
+                    fullpathname = entry.path
+                    stubname = entry.name
+                else:
+                    continue
+                filenames.append((entrynumber, fullpathname, stubname))
 
-                    if entry.is_dir():
-                        fullpathname = os.path.join(rootpath, entry.path, SFRFILENAME)
-                        sfr_file_exists = os.path.isfile(fullpathname)
-                        if not sfr_file_exists:
-                            continue
-                        stubname = os.path.join(entry.name, SFRFILENAME)
-                    elif entry.is_file() and entry.name.endswith("sfr"):
-                        print("Found {}".format(entry.path))
-                        fullpathname = entry.path
-                        stubname = entry.name
-                    else:
-                        continue
-                    filenames.append((entrynumber, fullpathname, stubname))
+                filenames.sort()
 
-                    filenames.sort()
+        if len(filenames) is 0:
+            raise ValueError("No fields found! Path '{}'".format(rootpath))
 
-            if len(filenames) is 0:
-                raise ValueError("No fields found! Path '{}'".format(rootpath))
-
-            exif = EXIF(filenames[0][1])
-            self.exif = exif
-            for entrynumber, pathname, filename in filenames:
+        exif = EXIF(filenames[0][1])
+        self.exif = exif
+        for entrynumber, pathname, filename in filenames:
+            if entrynumber > -np.inf:
                 print("Opening file {}".format(pathname))
                 try:
-                    field = SFRField(pathname=pathname, calibration=calibration, exif=exif)
+                    field = SFRField(pathname=pathname, calibration=calibration, exif=exif, load_complex=load_complex)
                 except NotEnoughPointsException:
                     continue
                 field.filenumber = entrynumber
                 field.filename = filename
-                self.fields.append(field)
-            if not include_all:
-                self.remove_duplicated_fields()
-                self.find_relevant_fields(writepath=rootpath, freq=AUC)
+                fields.append(field)
+        # if not include_all:
+        #     self.remove_duplicated_fields()
+        #     self.find_relevant_fields(writepath=rootpath, freq=AUC)
 
-        def init():
-            global gfs2
-            gfs2 = self
+        if load_focus_data:
+            self.fields = []
+            try:
+                focus_data = FocusPositionReader(rootpath, fallback=False)
+            except FileNotFoundError:
+                focus_data = estimate_focus_jitter(rootpath)
+            field_focus_tups = list(zip(focus_data, fields))
+            field_focus_tups.sort(key=lambda t: t[0])
+
+            prev_focus = -np.inf
+            sorted_included_focus = []
+            duplicate_threshold = 0.5
+            for focus, field in field_focus_tups:
+                if focus > (prev_focus + duplicate_threshold) or include_all:
+                    sorted_included_focus.append(focus)
+                    self.fields.append(field)
+                prev_focus = focus
+            self._focus_data = np.array(sorted_included_focus)
+        else:
+            self.fields = fields
 
     def find_relevant_fields(self, freq=DEFAULT_FREQ, detail=1, writepath=None):
         min_ = float("inf")
@@ -374,7 +485,8 @@ class FocusSet:
         plot.title = "Edge SFR vs focus position for varying height from centre"
         plot.contour2d()
 
-    def get_interpolation_fn_at_point(self, x, y, freq=DEFAULT_FREQ, axis=MEDIAL, limit=None, skip=1, order=2):
+    def get_interpolation_fn_at_point(self, x, y, freq=DEFAULT_FREQ, axis=MEDIAL, limit=None, skip=1, order=2,
+                                      multi=False):
         y_values = []
         allidxs = list(range(len(self.fields)))
         if limit is None:
@@ -390,7 +502,6 @@ class FocusSet:
 
         n = len(used_idxs)
 
-        multi = 0
         if axis == MEDIAL:
             for field in fields:
                 s = field.interpolate_value(x, y, freq, SAGITTAL)
@@ -408,8 +519,15 @@ class FocusSet:
                     y_values.append(field.interpolate_value(x, y, freq, axis))
         y_values = np.array(y_values)
         x_ixs = np.arange(lowlim, highlim, skip)  # Arbitrary focus units
-        x_values = self.focus_data[x_ixs]
-        interpfn = interpolate.InterpolatedUnivariateSpline(x_values, y_values, k=order)
+        x_values = np.array(self.focus_data)[x_ixs]
+        if axis in COMPLEX_AXES:
+            realinterpfn = interpolate.InterpolatedUnivariateSpline(x_values, np.real(y_values), k=order)
+            imajinterpfn = interpolate.InterpolatedUnivariateSpline(x_values, np.imag(y_values), k=order)
+
+            def interpfn(x_, complex_type=COMPLEX_CARTESIAN):
+                return convert_complex((realinterpfn(x_), imajinterpfn(x_)), complex_type)
+        else:
+            interpfn = interpolate.InterpolatedUnivariateSpline(x_values, y_values, k=order)
         pos = FocusOb(interpfn=interpfn)
         pos.focus_data = x_values
         pos.sharp_data = y_values
@@ -418,7 +536,7 @@ class FocusSet:
     def find_focus_spacing(self, plot=True):
         return lentil.wavefront.estimate_wavefront_errors(self)
 
-    def find_best_focus(self, x, y, freq=DEFAULT_FREQ, axis=MEDIAL, plot=False, show=True, strict=False, fitfn=cauchy,
+    def find_best_focus(self, x=None, y=None, freq=DEFAULT_FREQ, axis=MEDIAL, plot=False, show=True, strict=False, fitfn=cauchy,
                         _pos=None, _return_step_data_only=False, _step_est_offset=0.3, _step_estimation_posh=False):
         """
         Get peak SFR at specified location and frequency vs focus, optionally plot.
@@ -434,6 +552,8 @@ class FocusSet:
         # print(x,y, freq, axis)
         # print("---------")
         # Go recursive if both planes needed
+        if _return_step_data_only:
+            freq = LOWAVG
         if axis == MEDIAL and _pos is None:
             best_s = self.find_best_focus(x, y, freq, SAGITTAL, plot, show, strict)
             best_m = self.find_best_focus(x, y, freq, MERIDIONAL, plot, show, strict)
@@ -447,6 +567,8 @@ class FocusSet:
             return mid
 
         if _pos is None:
+            if x is None or y is None:
+                raise ValueError("Co-ordinates must be specified!")
             pos = self.get_interpolation_fn_at_point(x, y, freq, axis)
         else:
             pos = _pos
@@ -460,22 +582,6 @@ class FocusSet:
         # Initial fit guesses
         highest_data_x_idx = np.argmax(y_values)
         highest_data_y = y_values[highest_data_x_idx]
-        # print(highest_data_x_idx)
-
-        if 0 and "OLD":
-            if highest_data_x_idx < (len(y_values) - 2):
-                highest_within_tolerance = y_values > highest_data_y * 0.95
-                filtered_x_idxs = (np.arange(len(x_values)) * highest_within_tolerance)[highest_within_tolerance]
-                # print(filtered_x_idxs)
-                mean_peak_x_idx = filtered_x_idxs.mean()
-                mean_peak_x = x_values[filtered_x_idxs].mean()
-            else:  # Peak is (maybe almost) off edge
-                mean_peak_x = x_values[highest_data_x_idx]
-                mean_peak_x_idx = highest_data_x_idx
-                if highest_data_x_idx == (len(y_values) - 1):
-                    log.warning("Peak is at very end of data, true peak is probably missing")
-                else:
-                    log.warning("Peak is near end of data, this is not ideal")
 
         if highest_data_x_idx > 0:
             x_inc = x_values[highest_data_x_idx] - x_values[highest_data_x_idx-1]
@@ -490,22 +596,6 @@ class FocusSet:
         weights = np.clip(1.0 - shifted_distances * 1.3 , 1e-1, 1.0) ** 5
         mean_peak_x = x_values[highest_data_x_idx]
 
-        # shifted_distances = np.concatenate(([distances_from_peak[0]], distances_from_peak[1:] + distances_from_peak[:-1] / 2))
-        if 0 and "DEBUGPLOT":
-            print(absgrad)
-            print(gradsum)
-            print(distances_from_peak)
-            plt.plot(y_values, label="yvals")
-            plt.plot(absgrad, label="grad")
-            plt.plot(gradsum, label="gradsum")
-            plt.plot(distances_from_peak, label="distfrompeak")
-            plt.plot(shifted_distances, label="distfrompeakshift")
-            plt.plot(weights, label="weights")
-            plt.legend()
-            plt.show()
-            exit()
-
-
         # print(mean_peak_x_idx)
         # print(mean_peak_x)
         # Define optimisation bounds
@@ -516,16 +606,7 @@ class FocusSet:
 
         bounds = fitfn.bounds(mean_peak_x, highest_data_y, x_inc)
 
-        if 0 and "OLD":
-            offsets = np.arange(len(y_values)) - mean_peak_x_idx  # x-index vs peak estimate
-            weights_a = np.clip(1.2 - np.abs(offsets) / 11, 0.1, 1.0) ** 2  # Weight small offsets higher
-            norm_y_values = y_values / y_values.max()  # Normalise to 1.0
-            weights_b = np.clip(norm_y_values - 0.4, 0.0001, 1.0)  # Weight higher points higher, ignore below 0.4
-            weights = weights_a * weights_b  # Merge
-            weights = weights / weights.max()  # Normalise
-        # print(bounds)
         sigmas = 1. / weights
-        # initial = (highest_data_y, mean_peak_x, 3.0 * x_inc,)
         initial = fitfn.initial(mean_peak_x, highest_data_y, x_inc)
         fitted_params, _ = optimize.curve_fit(fitfn, x_values, y_values,
                                               bounds=bounds, sigma=sigmas, ftol=1e-5, xtol=1e-5,
@@ -548,7 +629,7 @@ class FocusSet:
                                           z22=a2,
                                           wavelength=0.575,
                                           opd_unit="um",
-                                          samples=256)
+                                          samples=128)
                 # prysm.PSF.from_pupil(pupil, efl=10*self.exif.aperture).plot2d()
                 # plt.show()
                 m = prysm.MTF.from_pupil(pupil, efl=self.exif.aperture * 10)
@@ -570,6 +651,8 @@ class FocusSet:
             # print(count)
             return np.array(out)
 
+        prysm_offset = None
+
         if _step_estimation_posh and _return_step_data_only:
             fit_peak_y = 0
             #
@@ -583,6 +666,7 @@ class FocusSet:
             # print("Prysm fit params", prysm_params)
             if plot:
                 prysmfit(x_values, *prysm_params, plot=True)
+            prysm_offset = fitted_params[1]
 
         log.debug("Fn fit peak is {:.3f} at {:.2f}".format(fitted_params[0], fitted_params[1]))
         log.debug("Fn sigma: {:.3f}".format(fitted_params[2]))
@@ -632,7 +716,7 @@ class FocusSet:
             #     return fitfn(image_distances, fit_peak_y, image_distance, fitted_params[2] * step)
             # x_values = get_opposide_dist((x_values - fit_peak_x) * longitude_defocus_step_um * 1e-6 + image_distance)
 
-            return est_defocus_rms_wfe_step, longitude_defocus_step_um, coc_step, image_distance, subject_distance, fit_peak_y
+            return est_defocus_rms_wfe_step, longitude_defocus_step_um, coc_step, image_distance, subject_distance, fit_peak_y, prysm_offset
 
         # def curvefn(xvals):
         #     return fitfn(xvals, fit_peak_y, 0.0, fitted_params[2] * coc_step)
@@ -732,6 +816,12 @@ class FocusSet:
         if self._focus_data is None:
             return np.arange(len(self.fields))
         return self._focus_data
+
+    @property
+    def scaled_focus_data(self):
+        if self.focus_scaling_fn is None:
+            return self.focus_data
+        return self.focus_scaling_fn(np.array(self.focus_data))
 
     def interpolate_value(self, x, y, focus, freq=AUC, axis=MEDIAL, posh=False):
         if int(focus) == 0:
@@ -918,7 +1008,7 @@ class FocusSet:
             plt.ylim(0.0, data_sfr.max())
             if show:
                 plt.show()
-        return SFRPoint(rawdata=data_sfr)
+        return FFTPoint(rawdata=data_sfr)
 
     def find_sharpest_raw_point(self):
         best = -np.inf, None
@@ -982,7 +1072,7 @@ class FocusSet:
     def estimate_wavefront_error(self, max_fnumber_error=0.33):
         f_range = RAW_SFR_FREQUENCIES[:30]
         # data_sfr = self.get_peak_sfr(freq=opt_freq, axis=BOTH_AXES).raw_sfr_data[:]
-        data_sfr = self.get_peak_sfr(IMAGE_WIDTH/2, IMAGE_HEIGHT/2, axis=BOTH_AXES).sfr[:30]
+        data_sfr = self.get_peak_sfr(IMAGE_WIDTH/2, IMAGE_HEIGHT/2, axis=BOTH_AXES).mtf[:30]
         data_sfr2 = self.find_sharpest_raw_points_avg_sfr()[:30] * self.fields[0].points[0].calibration[:30]
         # data_sfr = -0.2 + data_sfr * 1.2
         data_mean = np.mean(data_sfr)
@@ -1401,16 +1491,367 @@ class FocusSet:
         plt.ylim(baseline[0]-0.1, baseline[0]+0.1)
         plt.show()
 
-    @staticmethod
-    def intepolate_value_helper(fieldnumber, x, y, freq, axis):
-        return float(gfs2.fields[fieldnumber].interpolate_value(x, y, freq, axis))
+    def get_wavefront_data_path(self, seed=None):
+        path = os.path.join(self.rootpath, "wavefront_results/")
+        return path
 
-    @classmethod
-    def find_best_focus_helper(cls, args):
-        if args[6] % 50 == 0:
-            print("Finding best focus for location {} / {} in {}".format(args[6], args[7], args[5]))
-        ob = globalfocusset.find_best_focus(*args[2:6])
+    def get_old_wavefront_data_path(self, seed=None):
+        path = os.path.join(self.rootpath, "wavefront_data.csv")
+        return path
 
-        return args[0], args[1], float(ob.sharp), float(ob.focuspos)
-"photos@scs.co.uk"
-"S 0065-3858491"
+    def read_wavefront_data(self, overwrite, read_old=False, copy_old=True, read_autosave=True, x_loc=None, y_loc=None):
+        path = self.get_wavefront_data_path()
+        entry, number = scan_path(path, make_dir_if_absent=True, find_autosave=read_autosave, x_loc=x_loc, y_loc=y_loc)
+        if entry is not None:
+            lst = read_wavefront_file(entry.path)
+            return lst
+
+        if read_old:
+            try:
+                lst = read_wavefront_file(self.get_old_wavefront_data_path())
+                if copy_old:
+                    self.copy_old_wavefront_data_to_new()
+                if not overwrite:
+                    self.wavefront_data.extend(lst)
+
+                else:
+                    self.wavefront_data = lst
+                return lst
+            except FileNotFoundError:
+                pass
+        return [("", {})]
+
+    def copy_old_wavefront_data_to_new(self):
+        self.read_wavefront_data(overwrite=True, copy_old=False, read_old=True)
+        for item in self.wavefront_data:
+            save_wafefront_data(self.get_wavefront_data_path(), [item], suffix="copied")
+
+    # @staticmethod
+    # def intepolate_value_helper(fieldnumber, x, y, freq, axis):
+    #     return float(gfs2.fields[fieldnumber].interpolate_value(x, y, freq, axis))
+
+    # @classmethod
+    # def find_best_focus_helper(cls, args):
+    #     if args[6] % 50 == 0:
+    #         print("Finding best focus for location {} / {} in {}".format(args[6], args[7], args[5]))
+    #     ob = globalfocusset.find_best_focus(*args[2:6])
+    #
+        # return args[0], args[1], float(ob.sharp), float(ob.focuspos)
+
+
+def clear_numbered_autosaves(path):
+    for entry in os.scandir(path):
+        if 'autosave' in entry.name.lower() and 'csv' in entry.name.lower():
+            digits = [char for char in entry.name if char.isdigit()]
+            if len(digits):
+                os.remove(entry.path)
+
+
+
+def save_focus_jitter(rootpath, focus_values, code_version=0):
+    filepath = os.path.join(rootpath, "focus_positions.csv")
+    sfr_filenames = []
+    with os.scandir(rootpath) as it:
+        for entry in it:
+            if entry.name.lower().endswith(".sfr"):
+                digits = "".join((char for char in entry.name if char.isdigit()))
+                sfr_filenames.append((int(digits), entry.name, entry.path))
+
+    sfr_filenames.sort()
+    print(sfr_filenames)
+    print(focus_values)
+
+    if len(sfr_filenames) != len(focus_values):
+        log.warning("Focus value array does not correspond to number of .sfr files in path")
+
+    with open(filepath, 'w') as file:
+        writer = csv.writer(file, delimiter=" ", quotechar='"')
+        file.writelines(("# ID Filename Estimated_Focus_Position\n",))
+        writer.writerow(["Code_version", CURRENT_JITTER_CODE_VERSION])
+        for (num, name, path), focus_position in zip(sfr_filenames, focus_values):
+            writer.writerow((num, name, focus_position))
+
+
+def estimate_focus_jitter(path=None, data_in=None, plot=1):
+    code_version = 2
+    if data_in is not None:
+        iter = [(None, None, None)]
+        data = data_in
+    else:
+        focusset = FocusSet(rootpath=path, include_all=True, use_calibration=True, load_focus_data=False)
+        xvals = np.linspace(IMAGE_WIDTH / 4, IMAGE_WIDTH * 5/8, 4)[:]
+        yvals = np.linspace(IMAGE_HEIGHT / 4, IMAGE_HEIGHT * 5/8, 4)[:]
+        axes = [SAGITTAL, MERIDIONAL]
+        iter = zip(*(_.flatten() for _ in np.meshgrid(xvals, yvals, axes)))  # Avoid nested loops
+
+    all_errors = []
+    freqs = np.arange(2, 19, 2) / 64
+
+    for x, y, axis in iter:
+        if data_in is None:
+            y = IMAGE_HEIGHT / IMAGE_WIDTH * x
+            data = FocusSetData()
+            datalst = []
+            for freq in freqs:
+                pos = focusset.get_interpolation_fn_at_point(x, y, freq, axis)
+                datalst.append(pos.sharp_data)
+
+            data.merged_mtf_values = np.array(datalst)
+            data.focus_values = pos.focus_data
+        nfv = len(data.focus_values)
+        if nfv < 8:
+            log.warning("Focus jitter estimation may not be reliable with {} samples".format(nfv))
+            if nfv < 6:
+                raise ValueError("More focus samples needed")
+
+        freq_ix = 0
+        nom_focus_values = data.focus_values
+        non_inc = nom_focus_values[1] - nom_focus_values[0]
+
+        xmods = []
+        grads = []
+
+        lowcut = 0.2
+
+        while freq_ix < (data.merged_mtf_values.shape[0]):
+            low_freq_average = data.merged_mtf_values[freq_ix, :]
+            if low_freq_average.max() < 0.35:
+                break
+            print("Using frequency index {}".format(freq_ix))
+            freq_ix += 1
+
+            min_modulation = low_freq_average.min()
+            print("Min modulation", min_modulation)
+            print("Mean modulation", low_freq_average.mean())
+            if min_modulation < 0.4:
+                maxpoly = 4
+            elif min_modulation < 0.8:
+                maxpoly = 4
+            else:
+                maxpoly = 2
+
+            rawpoly = np.polyfit(nom_focus_values, low_freq_average, 4)
+            rawpolygrad = np.polyder(rawpoly, 1)
+            gradmetric = np.clip(np.abs(np.polyval(rawpolygrad, nom_focus_values)), 0, 0.5 / non_inc)
+            valid = np.logical_and(low_freq_average > lowcut, gradmetric > 0.012 / non_inc)
+            # print(gradmetric)
+            # print(valid)
+            valid_x = data.focus_values[valid]
+            valid_y = low_freq_average[valid]
+
+            if len(valid_x) < 5:
+                continue
+
+            poly_order = min(maxpoly, len(valid_x) - 2)  # Ensure is overdetmined
+
+            # print("Using {} order polynomial to find focus errors with {} samples".format(poly_order, len(valid_x)))
+
+            poly = np.polyfit(nom_focus_values[low_freq_average > lowcut], low_freq_average[low_freq_average > lowcut],
+                              poly_order)
+
+            def cost(xmod):
+                smoothline = np.polyval(poly, valid_x + xmod)
+                # modcost = ((1.0 - cost_gradmetric)**2 * xmod**2).mean() * 10e-5
+                modcost = 0
+                return ((valid_y - smoothline) ** 2).mean() + modcost
+
+            mul = 3.0
+            bounds = [(-non_inc * mul, non_inc * mul)] * len(valid_x)
+            opt = optimize.minimize(cost, np.zeros(valid_x.shape), method='L-BFGS-B', bounds=bounds)
+
+            xmod = []
+            grad = []
+            ix = 0
+            # print(valid)
+            # print(valid_x)
+            # print(opt.x)
+            for v, gradmetric_ in zip(valid, gradmetric):
+                if v:
+                    xmod.append(opt.x[ix])
+                    grad.append(gradmetric_)
+                    ix += 1
+                else:
+                    xmod.append(np.nan)
+                    grad.append(0)
+            xmod = np.array(xmod)
+            xmods.append(xmod)
+            grads.append(grad)
+
+            # print("Freq focus errors", xmod)
+
+            if plot >= 2 and np.abs(xmod[np.isfinite(xmod)]).sum() > 0:
+                plt.plot(nom_focus_values, low_freq_average, label='Raw Data {}'.format(freq_ix))
+                # plt.plot(nom_focus_values, validate_freq_average, label="Raw Data (2, validation)")
+                plt.plot(nom_focus_values, np.polyval(rawpolygrad, nom_focus_values) * 10 * non_inc,
+                         label="Raw Gradient")
+                plt.plot(valid_x, np.polyval(poly, valid_x + opt.x) + 0.01, label="Polyfit after optimisation")
+                # plt.plot(nom_focus_values, np.polyval(validate_poly, nom_focus_values + xmod)+0.01, label="Data 2 polyfit after optimisation")
+                plt.plot(valid_x, np.polyval(poly, valid_x) + 0.01, label="Valid Polyfit")
+                plt.plot(nom_focus_values, np.polyval(rawpoly, nom_focus_values) + 0.01, label="Raw Polyfit")
+                # plt.plot(nom_focus_values, np.polyval(validate_poly, nom_focus_values), label="Data2 polyfit")
+                plt.plot(nom_focus_values, gradmetric * 10 * non_inc, label="Grad valid metric")
+                plt.plot(nom_focus_values, xmod, '-', marker='s', label="Estimated focus errors")
+                if 'focus_errors' in data.hints:
+                    plt.plot(nom_focus_values, data.hints['focus_errors'], '-', marker='v',
+                             label="Hint data focus errors")
+                plt.legend()
+                plt.show()
+
+        # print(xmods)
+        # print(grads)
+        gradsum = np.sum(np.array(grads), axis=0)
+        # xmodmean = np.nansum(np.array(xmods) * np.array(grads), axis=0) / gradsum
+        xmodmean = np.nanmean(np.array(xmods), axis=0)
+
+        if np.isfinite(xmodmean).sum() == 0:
+            raise ValueError("No data! available")
+        # xmodmean[gradsum < 0.] = 0
+        # print(xmods)
+        # print(xmodmean)
+        if np.nansum(xmodmean) != 0:
+            xmodmean_zeroed = xmodmean.copy()
+            xmodmean_zeroed[~np.isfinite(xmodmean)] = 0
+            error_poly = np.polyfit(nom_focus_values, xmodmean_zeroed, 2)
+            roots = np.roots(np.polyder(error_poly, 1))
+            peakerrors = np.polyval(error_poly, roots)
+            polyerrormax = np.abs(peakerrors).max()
+            if plot >= 2:
+                plt.plot(nom_focus_values, np.polyval(error_poly, nom_focus_values), label="Error polyfit")
+
+            if polyerrormax > 0.06:
+                log.warning("Warning errors may not be random")
+            elif polyerrormax > 0.2:
+                raise ValueError("Error result doesn't appear random, please use more samples")
+
+        if plot >= 2:
+            # plt.plot(nom_focus_values, low_freq_average, label='Raw Data')
+            # plt.plot(nom_focus_values, validate_freq_average, label="Raw Data (2, validation)")
+            # plt.plot(nom_focus_values, np.polyval(rawpolygrad, nom_focus_values) * 10, label="Raw Gradient")
+            # plt.plot(valid_x, np.polyval(poly, valid_x + opt.x) + 0.01, label="Polyfit after optimisation")
+            # plt.plot(nom_focus_values, np.polyval(validate_poly, nom_focus_values + xmod)+0.01, label="Data 2 polyfit after optimisation")
+            # plt.plot(valid_x, np.polyval(poly, valid_x) + 0.01, label="Polyfit")
+            # plt.plot(nom_focus_values, np.polyval(validate_poly, nom_focus_values), label="Data2 polyfit")
+            # plt.plot(nom_focus_values, gradmetric, label="Grad valid metric")
+            plt.plot(nom_focus_values, np.mean(data.merged_mtf_values, axis=0), label="AUC")
+            plt.plot(nom_focus_values + xmodmean, np.mean(data.merged_mtf_values + 0.02, axis=0), label="AUCfix")
+            plt.plot(nom_focus_values, xmodmean, '-', marker='s', label="Estimated focus errors")
+            if 'focus_errors' in data.hints:
+                plt.plot(nom_focus_values, data.hints['focus_errors'], '-', marker='v', label="Hint data focus errors")
+
+            plt.legend()
+            plt.show()
+        all_errors.append(xmodmean)
+
+    for errs in all_errors:
+        if plot >= 1 or 1:
+            plt.plot(data.focus_values, errs, marker='s')
+        for focus, err in zip(data.focus_values, errs):
+            print("Offset {:.3f} at position {}".format(err, focus))
+
+
+    # allxmodmean = np.nanmean(all_errors, axis=0)
+    # allxmodmean[~np.isfinite(allxmodmean)] = 0
+
+    # Remove outliers and take mean
+    all_errors_ay = np.array(all_errors)
+    allxmodmean = np.zeros(all_errors_ay.shape[1])
+    for ix in range(len(allxmodmean)):
+        errors_at_position = all_errors_ay[np.isfinite(all_errors_ay[:, ix]), ix]
+        if len(errors_at_position) >= 3:
+            error_high = errors_at_position.max()
+            error_low = errors_at_position.min()
+            no_outliers = errors_at_position[np.logical_and(errors_at_position > error_low,
+                                                            errors_at_position < error_high)]
+            if len(no_outliers) > 0:
+                1+1
+                allxmodmean[ix] = no_outliers.mean()
+        elif 0 > len(errors_at_position) >= 2:
+            allxmodmean[ix] = errors_at_position.mean()
+
+
+    print(allxmodmean)
+    # plt.show()
+    # exit()
+
+    new_focus_values = data.focus_values + allxmodmean
+    if plot >= 1:
+        plt.plot(data.focus_values, allxmodmean, color='black', marker='v')
+        plt.show()
+    if data_in is None:
+        save_focus_jitter(rootpath=path, focus_values=new_focus_values, code_version=code_version)
+        return new_focus_values
+    else:
+        data_in.focus_values = new_focus_values
+        # datain.jittererr = (((data.hints['focus_errors'] - xmodmean))**2).mean()
+        # datain.jittererrmax = (np.abs(data.hints['focus_errors'] - xmodmean)).max()
+        # datain.hintjit = ((data.hints['focus_errors'])**2).max()
+        return data_in
+
+
+def scan_path(path, make_dir_if_absent=False, find_autosave=False, x_loc=None, y_loc=None):
+    if os.path.exists(path):
+        autosave_entry = None
+        existing_max = -1
+        highentry = None
+        if x_loc is not None:
+            xfindstr = "x{}".format(x_loc)
+            yfindstr = "y{}".format(y_loc)
+        else:
+            xfindstr, yfindstr = "", ""
+        for entry in os.scandir(path):
+            if entry.is_file:
+                if not xfindstr in entry.name or not yfindstr in entry.name:
+                    continue
+                split = [_ for _ in entry.name.split(".") if len(_) > 1]
+                filenumber = -np.inf
+                for string in split:
+                    if string[0].lower() == "n":
+                        digits = string[1:]
+                        try:
+                            filenumber = int(digits)
+                        except ValueError:
+                            pass
+                if filenumber > existing_max:
+                    existing_max = filenumber
+                    highentry = entry
+                elif "autosave" in entry.name.lower():
+                    autosave_entry = entry
+
+        if find_autosave and autosave_entry is not None:
+            return autosave_entry, existing_max
+        if existing_max >= 0:
+            return highentry, existing_max
+        return None, -1
+    else:
+        if make_dir_if_absent:
+            os.makedirs(path)
+            return None, -1
+        else:
+            raise FileNotFoundError()
+
+
+def save_wafefront_data(path, wf_data, suffix="", quiet=False):
+    # path = os.path.join(rootpath, "wavefront_results/")
+    _, existing_max = scan_path(path, make_dir_if_absent=True)
+
+    if "autosave" in suffix:
+        save_filename = "wavefront_data.{}.csv".format(suffix)
+    elif suffix:
+        save_filename = "wavefront_data.{}.n{}.csv".format(suffix, existing_max + 1)
+    else:
+        save_filename = "wavefront_data.n{}.csv".format(existing_max + 1)
+
+    save_filepath = os.path.join(path, save_filename)
+
+    with open(save_filepath, 'w') as file:
+        writer = csv.writer(file, delimiter=" ", quotechar='"')
+        for item in wf_data:
+            writer.writerow((item[0],))
+            for key, value in item[1].items():
+                if type(value) is list or type(value) is tuple:
+                    writer.writerow([key] + list(value))
+                else:
+                    writer.writerow([key, value])
+        writer.writerow([""])
+    if not quiet:
+        print("Saved to '{}".format(save_filepath))

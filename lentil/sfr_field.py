@@ -6,23 +6,26 @@ import matplotlib
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.colors import ListedColormap
-from scipy import interpolate
+from scipy import interpolate, optimize
+from scipy import fftpack
 
 from lentil.constants_utils import *
 from lentil.plot_utils import FieldPlot
-from lentil.sfr_point import SFRPoint
+from lentil.sfr_point import FFTPoint
 
 FUNCSTORE = None
+
 
 class NotEnoughPointsException(Exception):
     pass
 
-class SFRField():
+
+class SFRField:
     """
     Represents entire image field of SFRPoints for a single image
     """
 
-    def __init__(self, points=None, pathname=None, calibration=None, smoothing=0, exif=None):
+    def __init__(self, points=None, pathname=None, calibration=None, smoothing=0, exif=None, load_complex=False):
         """
 
         :param points: Iterable of SFRPoints, order not important
@@ -36,15 +39,37 @@ class SFRField():
 
                 for row in csvreader:
                     try:
-                        points.append(SFRPoint(row, calibration=calibration))
+                        points.append(FFTPoint(row, calibration=calibration))
                     except ValueError:
-                        pass
+                        if load_complex:
+                            # Need to keep points in order to align with esf file
+                            points.append(None)
             if exif is not None:
                 self.exif = exif
             else:
                 self.read_exif(pathname)
-        self.points = points
 
+        if load_complex:
+            if type(load_complex) is not str:
+                esfpath = pathname[:-3] + "esf"
+                with open(esfpath, 'r') as esffile:
+                    csvreader = csv.reader(esffile, delimiter=' ', quotechar='|')
+                    esfs = []
+                    for row in csvreader:
+                        try:
+                            esfs.append(row)
+                        except ValueError:
+                            pass
+            if len(points) != len(esfs):
+                raise Exception("ESF file has different number of points compared to SFR file "
+                                "({} vs {})".format(len(esfs), len(points)))
+            process_esfs(esfs, points)
+            points = [point for point in points if point is not None]
+            self.has_phase = True
+        else:
+            self.has_phase = False
+
+        self.points = points
         enough_m = len(self.get_subset(MERIDIONAL)) > 20
         enough_s = len(self.get_subset(SAGITTAL)) > 20
 
@@ -62,9 +87,14 @@ class SFRField():
         np_axis['np_y'] = None
         np_axis['np_sfr'] = None
         np_axis['np_sfr_freq'] = None
-        np_axis['np_mtf'] = None
-        np_axis2 = np_axis.copy()
-        self.np_dict_cache = {SAGITTAL: np_axis, MERIDIONAL: np_axis2}
+        np_axis['np_value'] = None
+        self.np_dict_cache = {MEDIAL: np_axis,
+                              SAGITTAL: np_axis.copy(),
+                              MERIDIONAL: np_axis.copy(),
+                              SAGITTAL_REAL: np_axis.copy(),
+                              MERIDIONAL_REAL: np_axis.copy(),
+                              SAGITTAL_IMAG: np_axis.copy(),
+                              MERIDIONAL_IMAG: np_axis.copy()}
 
         self.smoothing = smoothing
         self.bounds_tuple_cache = {}
@@ -146,11 +176,11 @@ class SFRField():
         fn = interpolate.SmoothBivariateSpline(x_lst, y_lst, z_lst, kx=2, ky=2, s=float("inf"))
         return fn
 
-    def interpolate_value(self, x, y, freq=DEFAULT_FREQ, axis=MEDIAL):
+    def interpolate_value(self, x, y, freq=DEFAULT_FREQ, axis=MEDIAL, complex_type=COMPLEX_CARTESIAN):
         """
         Provides an interpolated MTF/SFR for chosen point in field and axis. Uses a locally weighted polynomial plane.
 
-        Pass -1 as frequency for MTF50 results in cy/px
+        Pass -1 as frequency for MTF50 results in cy/px (not for complex OTF)
 
         :param x: x location
         :param y: y location
@@ -158,30 +188,44 @@ class SFRField():
         :param freq: spacial frequency to return, -1 for mtf50
         :return: interpolated cy/px at specified frequency, or mtf50 frequency if -1 passed
         """
+
+        if axis == SAGITTAL_COMPLEX:
+            real_out = self.interpolate_value(x, y, freq, SAGITTAL_REAL)
+            imaj_out = self.interpolate_value(x, y, freq, SAGITTAL_IMAG)
+            return convert_complex((real_out, imaj_out), complex_type)
+        elif axis == MERIDIONAL_COMPLEX:
+            real_out = self.interpolate_value(x, y, freq, MERIDIONAL_REAL)
+            imaj_out = self.interpolate_value(x, y, freq, MERIDIONAL_IMAG)
+            return convert_complex((real_out, imaj_out), complex_type)
+
         if self.np_dict_cache[axis]['np_x'] is None or self.np_dict_cache[axis]['np_sfr_freq'] != freq:
             lst = []
             for point in self.get_subset(axis):
-                lst.append((point.x, point.y, point.get_freq(freq)))
-            if len(lst) is 0:
-                for p in self.points:
-                    print(p.radialangle)
+                if axis in COMPLEX_AXES:
+                    real, imaj = point.get_complex_freq(freq, complex_type=COMPLEX_CARTESIAN_REAL_TUPLE)
+                    if axis in REAL_AXES:
+                        lst.append((point.x, point.y, real))
+                    elif axis in IMAG_AXES:
+                        lst.append((point.x, point.y, imaj))
+                else:
+                    lst.append((point.x, point.y, point.get_freq(freq)))
             x_arr, y_arr, z_arr = zip(*lst)
             x_arr = np.array(x_arr)
             y_arr = np.array(y_arr)
             z_arr = np.array(z_arr)
             self.np_dict_cache[axis]['np_x'] = x_arr
             self.np_dict_cache[axis]['np_y'] = y_arr
-            self.np_dict_cache[axis]['np_mtf'] = z_arr
             self.np_dict_cache[axis]['np_sfr_freq'] = freq
+            self.np_dict_cache[axis]['np_value'] = z_arr
         x_arr = self.np_dict_cache[axis]['np_x']
         y_arr = self.np_dict_cache[axis]['np_y']
-        z_arr = self.np_dict_cache[axis]['np_mtf']
+        z_arr = self.np_dict_cache[axis]['np_value']
 
         # Calculate distance of each edge location to input location on each axis
         x_distances = (x_arr - x)
         y_distances = (y_arr - y)
 
-        distances = np.sqrt((x_distances) ** 2 + (y_distances) ** 2)
+        distances = np.sqrt(x_distances ** 2 + y_distances ** 2)
 
         stack = np.vstack((x_arr, y_arr, z_arr, x_distances, y_distances, distances))
 
@@ -215,16 +259,15 @@ class SFRField():
                                                  w=weights, kx=order, ky=order, s=float("inf"))
         radius_range = min_point_radius / min_ratio_radius
         angle_std = np.std(angles)
-        # print("angle std {}".format(angle_std))
+
         low = 40
         high = 120
-        # print(stack.shape,sortedstack.shape, clippedstack.shape, min_ratio_radius, min_point_radius)
-        # print(nr)
+
         if radius_range < high:
             func_linear = interpolate.SmoothBivariateSpline(clippedstack[0], clippedstack[1], clippedstack[2],
                                                             bbox=bbox, w=weights, kx=1, ky=1, s=float("inf"))
             low_order_ratio = 1.0 - np.clip((angle_std - low) / (high - low), 0.0, 1.0)
-            # print("Low", low_order_ratio)
+
             output = func_linear(x, y)[0][0] * low_order_ratio + func(x, y)[0][0] * (1.0 - low_order_ratio)
         else:
             output = func(x, y)[0][0]
@@ -248,7 +291,26 @@ class SFRField():
             ax.set_ylabel("y")
             plt.show()
 
-        return np.clip(output, 1e-5, np.inf)
+        if axis in COMPLEX_AXES:
+            return output
+        else:
+            return np.clip(output, 1e-5, np.inf)
+
+    def interpolate_otf_complex(self, x, y, freq, axis, type=COMPLEX_CARTESIAN):
+        if not self.has_phase:
+            raise ValueError("Field does not have any phase data, only MTF")
+        if axis == SAGITTAL:
+            realaxis = SAGITTAL_REAL
+            imajaxis = SAGITTAL_IMAG
+        elif axis == MERIDIONAL:
+            realaxis = MERIDIONAL_REAL
+            imajaxis = MERIDIONAL_IMAG
+        else:
+            raise ValueError("Axis {} is not a valid choice".format(axis))
+        real = self.interpolate_otf_complex(x, y, freq, realaxis)
+        imaj = self.interpolate_otf_complex(x, y, freq, imajaxis)
+        return convert_complex((real, imaj), type)
+
 
     def plot(self, freq=DEFAULT_FREQ, axis=MEDIAL, plot_type=1, detail=1.0,
              show=True, ax=None, alpha=0.85):
@@ -291,7 +353,10 @@ class SFRField():
         fig = plt.figure()
         ax = fig.add_subplot(111, projection='3d')
         if not autoscale:
-            ax.set_zlim(0, 1)
+            if axis in POLAR_AXES:
+                ax.set_zlim(-np.pi, np.pi)
+            else:
+                ax.set_zlim(0, 1)
 
         if axis == MEDIAL:
             axis = (SAGITTAL, MERIDIONAL)
@@ -300,7 +365,21 @@ class SFRField():
         for axis_ in axis:
             lst = []
             for point in self.get_subset(axis_):
-                lst.append((point.x, point.y, point.get_freq(freq)))
+                if axis_ in COMPLEX_AXES:
+                    if axis_ in POLAR_AXES:
+                        ctype = COMPLEX_POLAR_TUPLE
+                    else:
+                        ctype = COMPLEX_CARTESIAN_REAL_TUPLE
+                    tup = point.get_complex_freq(freq, complex_type=ctype)
+                    if axis_ in REAL_AXES:
+                        val = tup[0]
+                    elif axis_ in COMPLEX_AXES:
+                        val = tup[1]
+                    else:
+                        raise Exception("Unsure what's going on...")
+                    lst.append((point.x, point.y, val))
+                else:
+                    lst.append((point.x, point.y, point.get_freq(freq)))
             x_arr, y_arr, z_arr = zip(*lst)
             x_arr = np.array(x_arr)
             y_arr = np.array(y_arr)
@@ -427,3 +506,95 @@ class SFRField():
         plt.ylabel("SFR")
         plt.title(self.exif.summary + " at {:.0f}, {:.0f}".format(x, y))
         plt.show()
+
+    def read_exif(self, sfr_path):
+        # exifpath = sfr_path[:-3] + ".exif"
+        self.exif = EXIF(sfr_pathname=sfr_path)
+        return self.exif
+
+
+def process_esfs(esfs, points):
+    x = np.linspace(0, DEFAULT_PIXEL_SIZE * 16, 64)
+    for point, esf in zip(points, esfs):
+        if point is None:
+            continue
+
+        invert = 1 if point.x < 30000 != point.y < 2000 else 0
+        arr = np.array([float(_) for _ in esf if len(_)])
+        if 0:
+            invert = arr[-1] > arr[0]
+            interpfn = interpolate.InterpolatedUnivariateSpline(np.arange(len(arr)), arr, k=1)
+            min_ = arr.min()
+            max_ = arr.max()
+            mid = (min_ + max_) * 0.5
+            def callable(x):
+                return interpfn(x) - mid
+            mid = optimize.newton(callable, 128)
+            arr = interpfn(np.arange(len(arr))+mid - 128)
+            lsf = np.diff(arr)
+            res = fftpack.fft(np.fft.fftshift(lsf))
+            res /= res[0]
+        else:
+            if arr[0] > arr[-1]:
+                lsf = -np.diff(arr)
+            else:
+                lsf = np.diff(arr)
+            lsf = np.concatenate((lsf, (0,)))
+            pointsarr = np.arange(len(lsf))
+
+            interpfn = interpolate.InterpolatedUnivariateSpline(pointsarr, lsf, k=3, ext='zeros')
+
+            def callable(x):
+                shifted_lsf = np.fft.fftshift(interpfn(pointsarr + x[0]))
+                fft = fftpack.fft(shifted_lsf)[:4]
+                fft /= abs(fft[0])
+                return sum(fft.imag ** 2)
+
+            opt = optimize.minimize(callable, (0,), bounds=((-20, 20),))
+            shift,  = opt.x
+            # shift,  = 0,
+            shifted_lsf = abs(np.fft.fftshift(interpfn(pointsarr + shift)))
+            shifted_lsf /= shifted_lsf.max()
+            # fft = fftpack.fft(np.fft.fftshift(shifted_lsf))
+            fft = fftpack.fft(shifted_lsf)
+            fft /= sum(abs(fft))
+
+        zero = abs(fft[0])
+        interpfn = interpolate.InterpolatedUnivariateSpline(x[:32]*2, np.real(fft[:32]) / zero, k=1)
+        real = interpfn(x)
+        interpfn = interpolate.InterpolatedUnivariateSpline(x[:32]*2, np.imag(fft[:32]) / zero, k=1)
+        imag = interpfn(x)
+        otf = real + 1j * imag
+        point.raw_sfr_data = (real ** 2 + imag ** 2) ** 0.5
+        point.raw_otf_real = real
+        point.raw_otf_imag = imag
+        point.raw_otf_phase = np.angle(otf)
+        point.otf_phase = np.angle(otf)  # No calibration needed
+        point.raw_otf = otf
+        point.raw_esf_data = arr
+        point.raw_lsf_data = shifted_lsf
+        point.has_phase = True
+    return points
+    points = [point for point in points if point is not None]
+
+    radius = 1500
+    for angle in np.linspace(0, 2 * np.pi, 20):
+        xscan = np.sin(angle) * radius + 3000
+        yscan = np.cos(angle) * radius + 2000
+        points.sort(key=lambda p: ((p.x - xscan)**2 + (p.y - yscan)**2)**0.5, reverse=False)
+        for point in points:
+            if point.is_saggital:
+                continue
+            print(point)
+            plt.plot(point.raw_sfr_data[:32], label="Magnitude")
+            # plt.plot(np.abs(res[:16] / zero), label=)
+            # plt.plot(np.unwrap(np.angle(res[:16]) / zero))
+            plt.plot(point.raw_otf_phase[:32] / np.pi, label="Angle")
+            plt.plot(point.raw_otf_real[:32], label='Real')
+            plt.plot(point.raw_otf_imag[:32], label="Imag")
+            plt.plot(np.linspace(0, 16, 256), point.raw_esf_data[:] / point.raw_esf_data.max(), label="ESF")
+            plt.plot(np.linspace(0, 16, 256), point.raw_lsf_data[:] / point.raw_lsf_data.max(), label="LSF")
+            plt.legend()
+            # plt.plot(point.raw_sfr_data)
+            plt.show()
+            break

@@ -6,7 +6,8 @@ from scipy import interpolate, optimize
 import lentil.constants_utils
 from lentil.constants_utils import *
 
-class SFRPoint:
+
+class FFTPoint:
     """
     Holds all data for one SFR edge analysis point
     """
@@ -18,7 +19,9 @@ class SFRPoint:
         :param rowdata: raw from csv reader
         :param pixelsize: pixel size in metres if required
         """
+        self.has_phase = False
         if rowdata is not None:
+            self.squareid = float(rowdata[0])
             self.x = float(rowdata[1])
             self.y = float(rowdata[2])
             self.angle = float(rowdata[3])
@@ -42,7 +45,7 @@ class SFRPoint:
         if self.raw_sfr_data.sum() == 0.0:
             raise ValueError("MTF data is all zero!")
         self.pixelsize = pixelsize or lentil.constants_utils.DEFAULT_PIXEL_SIZE
-        self._interpolate_fn = None
+        # self._interpolate_fn = None
         self._mtf50 = None
         assert len(self.raw_sfr_data) == 64
 
@@ -51,6 +54,33 @@ class SFRPoint:
             self.calibration = calibration_padded
         else:
             self.calibration = np.ones((64,))
+
+        self.raw_otf_real = None
+        self.raw_otf_imag = None
+        self.raw_otf_phase = None
+        self.otf_phase = None  # No calibration needed
+        self.raw_otf = None
+
+    def get_complex_freq(self, cy_px=None, lp_mm=None, complex_type=COMPLEX_CARTESIAN):
+        """
+        Returns complex OTF at specified frequency.
+
+        Using linear interpolation
+
+        :param cy_px: frequency of interest in cycles/px (0.0-1.0) (or constant)
+        :param lp_mm: frequency of interest in line pairs / mm (>0.0)
+        :param complex_type: format of complex return (default COMPLEX_CARTESIAN)
+        :return:
+        """
+        if not self.has_phase:
+            raise NoPhaseData()
+        if lp_mm is not None:
+            cy_px = lp_mm * self.pixelsize * 1e3
+        if cy_px is None:
+            raise ValueError("Must provide frequency in cycles/px or lp/mm")
+
+        otf_at_freq = self.complex_interpolate_fn(cy_px, complex_type)
+        return otf_at_freq
 
     def get_freq(self, cy_px=None, lp_mm=None):
         """
@@ -66,7 +96,7 @@ class SFRPoint:
         if lp_mm is not None:
             cy_px = lp_mm * self.pixelsize * 1e3
         if cy_px is None:
-            raise AttributeError("Must provide frequency in cycles/px or lp/mm")
+            raise InvalidFrequency("Must provide frequency in cycles/px or lp/mm")
         try:
             if cy_px == MTF50:
                 if lp_mm is not None:
@@ -80,7 +110,7 @@ class SFRPoint:
             if cy_px == LOWAVG:
                 return self.get_lowavg()
             if not 0.0 <= cy_px < 1.0:
-                raise AttributeError("Frequency must be between 0 and twice nyquist, or a specified constant")
+                raise InvalidFrequency("Frequency must be between 0 and twice nyquist, or a specified constant")
         except ValueError:  # Might be numpy array and it all breaks
             pass
         return self.interpolate_fn(cy_px)
@@ -88,7 +118,18 @@ class SFRPoint:
     @property
     def interpolate_fn(self):
         return interpolate.InterpolatedUnivariateSpline(lentil.constants_utils.RAW_SFR_FREQUENCIES,
-                                                        self.sfr, k=1)
+                                                        self.mtf, k=1)
+
+    @property
+    def complex_interpolate_fn(self):
+        def complex_interp_fn(freq, complex_type=COMPLEX_CARTESIAN):
+            real_fn = interpolate.InterpolatedUnivariateSpline(lentil.constants_utils.RAW_SFR_FREQUENCIES,
+                                                        self.raw_otf_real * self.calibration, k=1)
+            imaj_fn = interpolate.InterpolatedUnivariateSpline(lentil.constants_utils.RAW_SFR_FREQUENCIES,
+                                                        self.raw_otf_imag * self.calibration, k=1)
+
+            return convert_complex((real_fn(freq), imaj_fn(freq)), complex_type)
+        return complex_interp_fn
 
     @property
     def calibration_fn(self):
@@ -96,8 +137,12 @@ class SFRPoint:
                                                         self.calibration, k=1)
 
     @property
-    def sfr(self):
+    def mtf(self):
         return self.raw_sfr_data * self.calibration
+
+    @property
+    def otf(self):
+        return self.raw_otf * self.calibration
 
     @property
     def mtf50(self):
@@ -109,7 +154,7 @@ class SFRPoint:
 
         def callable_(fr):
             return self.interpolate_fn(fr) - 0.5
-        guess = np.argmax(self.sfr < 0.5) / 65
+        guess = np.argmax(self.mtf < 0.5) / 65
         try:
             mtf50 = optimize.newton(callable_, guess, tol=0.0003)
         except RuntimeError:
@@ -139,9 +184,9 @@ class SFRPoint:
             return True
 
     def is_axis(self, axis):
-        if axis == lentil.constants_utils.SAGITTAL:
+        if axis in SAGITTAL_AXES:
             return self.is_saggital
-        if axis == lentil.constants_utils.MERIDIONAL:
+        if axis in MERIDIONAL_AXES:
             return self.is_meridional
         if axis == lentil.constants_utils.MEDIAL:
             return True
@@ -186,10 +231,10 @@ class SFRPoint:
 
     @property
     def auc(self):
-        return self.sfr[:32].mean()
+        return self.mtf[:32].mean()
 
     def get_acutance(self, print_height=ACUTANCE_PRINT_HEIGHT, viewing_distance=ACUTANCE_VIEWING_DISTANCE):
-        return calc_acutance(self.sfr, print_height, viewing_distance)
+        return calc_acutance(self.mtf, print_height, viewing_distance)
 
     def plot_acutance_vs_printsize(self, heightrange=(0.1, 1.0), show=True):
         height_arr = np.linspace(heightrange[0], heightrange[1], 12)
@@ -211,8 +256,9 @@ class SFRPoint:
             self.calibration = cal
 
     def __str__(self):
-        return "x: {:.0f}, y: {:.0f}, angle: {:.0f}, radial angle: {:.0f}".format(self.x,
-                                                                                  self.y,
-                                                                                  self.angle,
-                                                                                  self.radialangle)
+        return "x: {:.0f}, y: {:.0f}, angle: {:.0f}, radial angle: {:.0f}, square {:.0f}".format(self.x,
+                                                                                                 self.y,
+                                                                                                 self.angle,
+                                                                                                 self.radialangle,
+                                                                                                 self.squareid)
 
