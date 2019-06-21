@@ -7,7 +7,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.colors import ListedColormap
 from scipy import interpolate, optimize
-from scipy import fftpack
+from scipy import fftpack, signal
 
 from lentil.constants_utils import *
 from lentil.plot_utils import FieldPlot
@@ -25,13 +25,14 @@ class SFRField:
     Represents entire image field of SFRPoints for a single image
     """
 
-    def __init__(self, points=None, pathname=None, calibration=None, smoothing=0, exif=None, load_complex=False):
+    def __init__(self, points=None, pathname=None, calibration=None, smoothing=0, exif=None, load_complex=False, filenumber=-1):
         """
 
         :param points: Iterable of SFRPoints, order not important
         :param pathname: Path to MTF Mapper edge_sfr_values.txt file to parse
         :param calibration: calibration data array
         """
+        self.filenumber = filenumber
         if points is None:
             points = []
             with open(pathname, 'r') as sfrfile:
@@ -39,7 +40,7 @@ class SFRField:
 
                 for row in csvreader:
                     try:
-                        points.append(FFTPoint(row, calibration=calibration))
+                        points.append(FFTPoint(row, calibration=calibration, filenumber=self.filenumber))
                     except ValueError:
                         if load_complex:
                             # Need to keep points in order to align with esf file
@@ -51,20 +52,24 @@ class SFRField:
 
         if load_complex:
             if type(load_complex) is not str:
-                esfpath = pathname[:-3] + "esf"
-                with open(esfpath, 'r') as esffile:
-                    csvreader = csv.reader(esffile, delimiter=' ', quotechar='|')
-                    esfs = []
-                    for row in csvreader:
-                        try:
-                            esfs.append(row)
-                        except ValueError:
-                            pass
+
+                esfpath1 = pathname[:-3] + "esf"
+                esfpath2 = os.path.join(os.path.split(pathname)[0], "raw_esf_values.txt")
+                for esfpath in [esfpath1, esfpath2]:
+                    if not os.path.exists(esfpath):
+                        continue
+                    with open(esfpath, 'r') as esffile:
+                        csvreader = csv.reader(esffile, delimiter=' ', quotechar='|')
+                        esfs = []
+                        for row in csvreader:
+                            try:
+                                esfs.append(row)
+                            except ValueError:
+                                pass
             if len(points) != len(esfs):
                 raise Exception("ESF file has different number of points compared to SFR file "
                                 "({} vs {})".format(len(esfs), len(points)))
-            process_esfs(esfs, points)
-            points = [point for point in points if point is not None]
+            points = process_esfs(esfs, points)
             self.has_phase = True
         else:
             self.has_phase = False
@@ -336,6 +341,8 @@ class SFRField:
 
         max_z = np.amax(z_values) * 1.1
         plot = FieldPlot()
+        plot.zmin = diffraction_mtf(freq, LOW_BENCHMARK_FSTOP)
+        plot.zmax = diffraction_mtf(freq, HIGH_BENCHBARK_FSTOP)
         plot.xticks = x_values
         plot.yticks = y_values
         plot.zdata = z_values
@@ -348,6 +355,25 @@ class SFRField:
             return plot.projection3d(ax=ax, show=show)
         else:
             raise ValueError("Unknown plot type")
+
+    def plot_edge_angle(self):
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        lst = []
+        for point in self.points:
+            if point.is_meridional:
+                continue
+            lst.append((point.x, point.y, point.angle,
+                        point.get_complex_freq(0.15, complex_type=COMPLEX_CARTESIAN_REAL_TUPLE)[1]))
+
+        x_arr, y_arr, z_arr, imag_arr = zip(*lst)
+        x_arr = np.array(x_arr)
+        y_arr = np.array(y_arr)
+        z_arr = np.array(z_arr)
+        imag_arr = np.array(imag_arr)
+        colours = np.array(imag_arr).T
+        ax.scatter(x_arr, y_arr, z_arr, c=colours, marker='.', cmap=plt.cm.jet)
+        plt.show()
 
     def plot_points(self, freq=0.05, axis=MEDIAL, autoscale=False, add_corners=False):
         fig = plt.figure()
@@ -504,7 +530,10 @@ class SFRField:
         plt.plot(freqs, ys)
         plt.xlabel("Spacial frequency (cy/px)")
         plt.ylabel("SFR")
-        plt.title(self.exif.summary + " at {:.0f}, {:.0f}".format(x, y))
+        try:
+            plt.title(self.exif.summary + " at {:.0f}, {:.0f}".format(x, y))
+        except ValueError:
+            pass
         plt.show()
 
     def read_exif(self, sfr_path):
@@ -514,67 +543,278 @@ class SFRField:
 
 
 def process_esfs(esfs, points):
-    x = np.linspace(0, DEFAULT_PIXEL_SIZE * 16, 64)
+    x = np.linspace(0, 4, 256)  # cy/px
+    # x = RAW_SFR_FREQUENCIES
+    goodpoints = []
+
+    # Work out chart centre by looking at angles
+
+    plotx = np.linspace(-1, 1, 4) * 500 + IMAGE_WIDTH / 2
+    a_list = []
+    b_list = []
+    for point in points:
+        if point is None:
+            continue
+        angle = (point.angle) / 180 * np.pi
+        angle_tries = np.linspace(0, np.pi * 3 / 4, 4) + angle
+        a_s = np.tan(angle_tries)
+        b_s = np.ones_like(a_s) * point.y - a_s * point.x
+        y_at_mid_x = a_s * IMAGE_WIDTH / 2 + b_s
+        best_ix = np.argmin(abs(y_at_mid_x - IMAGE_HEIGHT / 2))
+        min_a = a_s[best_ix]
+        min_b = b_s[best_ix]
+        a_list.append(min_a)
+        b_list.append(min_b)
+        # plt.plot(plotx, min_a * plotx + min_b)
+    # plt.show()
+    a_array = np.array(a_list)
+    b_array = np.array(b_list)
+
+    filtercache = None
+
+    def cost(params):
+        nonlocal filtercache
+        x, y = params * 1000
+        test_ys = a_array * x + b_array
+        offsets = test_ys - y
+        std = np.std(offsets)
+        median = np.median(offsets)
+        if filtercache is None:
+            filteridx = (offsets > (median - std * 3) * (offsets < (median + std * 3)))
+            filtercache = filteridx
+        else:
+            filteridx = filtercache
+        cost = (offsets[filteridx]**2).mean()
+        return cost * 1e-5
+
+    opt = optimize.minimize(cost, (IMAGE_WIDTH / 2 * 1e-3, IMAGE_HEIGHT / 2 * 1e-3))
+    # print(opt)
+    # exit()
+    # opt.x = (IMAGE_WIDTH / 2, IMAGE_HEIGHT / 2)
+    chart_centre_x = opt.x[0] * 1000
+    chart_centre_y = opt.x[1] * 1000
+
+    xtrunc = np.linspace(0, 4, 128)
+    xtrunc[0] = 1
+    correction = 1.0 / (np.sin(np.pi * xtrunc/4)/(np.pi * xtrunc/4) * np.sin(np.pi * xtrunc/8)/(np.pi * xtrunc/8))[:32]
+    correction[0] = 1
+
+    squares_s = []
+    squares_m = []
     for point, esf in zip(points, esfs):
         if point is None:
             continue
-
-        invert = 1 if point.x < 30000 != point.y < 2000 else 0
-        arr = np.array([float(_) for _ in esf if len(_)])
-        if 0:
-            invert = arr[-1] > arr[0]
-            interpfn = interpolate.InterpolatedUnivariateSpline(np.arange(len(arr)), arr, k=1)
-            min_ = arr.min()
-            max_ = arr.max()
-            mid = (min_ + max_) * 0.5
-            def callable(x):
-                return interpfn(x) - mid
-            mid = optimize.newton(callable, 128)
-            arr = interpfn(np.arange(len(arr))+mid - 128)
-            lsf = np.diff(arr)
-            res = fftpack.fft(np.fft.fftshift(lsf))
-            res /= res[0]
+        if point.angle < 6:
+            continue
+        squareid = point.squareid
+        if point.is_saggital:
+            squares_s.append((squareid, 0, point, esf))
         else:
-            if arr[0] > arr[-1]:
-                lsf = -np.diff(arr)
+            squares_m.append((squareid, 1, point, esf))
+
+
+        # if not squareid >= 0:
+        #     continue
+        # for point_compare in goodpoints:
+        #     if point_compare.squareid != squareid:
+        #         continue
+        #     if point.is_saggital != point_compare.is_saggital:
+        #         cache.get('squareid', []).append(point_compare)
+                # continue
+            # if point_compare is point:
+            #     continue
+    # for lst in [squares_s, squares_m]:
+    #     last_tup = None
+    #     for tup in lst:
+    #         if last_tup is None or last_tup[:2] != tup[:2]:
+    #             last_tup = tup
+    #             continue
+    #         squareid, is_meridional, point, esf = tup
+    #         _, _, point2, esf2 = last_tup
+    if 1:
+        for point, esf in zip(points, esfs):
+            if point is None:
+                continue
+            if point.angle < 6:
+                continue
+            arr = np.array([float(_) for _ in esf if len(_)])
+            if sum(arr) == 0:
+                continue
+
+            flip = False
+            if arr[0] > arr[-1] and 1:
+                lsf = (-np.diff(arr))
+                flip = True
             else:
                 lsf = np.diff(arr)
-            lsf = np.concatenate((lsf, (0,)))
-            pointsarr = np.arange(len(lsf))
+            if 1:
+                if point.y < chart_centre_y and not point.is_saggital:
+                    lsf = np.flip(lsf, axis=0)
+                    flip = flip is False
+                if point.x < chart_centre_x and point.is_saggital:
+                    lsf = np.flip(lsf, axis=0)
+                    flip = flip is False
+                    # flip = False
+            point.flipped = flip
 
-            interpfn = interpolate.InterpolatedUnivariateSpline(pointsarr, lsf, k=3, ext='zeros')
+            padded_lsf = np.concatenate((lsf, (0,)))
 
-            def callable(x):
-                shifted_lsf = np.fft.fftshift(interpfn(pointsarr + x[0]))
-                fft = fftpack.fft(shifted_lsf)[:4]
-                fft /= abs(fft[0])
-                return sum(fft.imag ** 2)
+            window = signal.windows.tukey(len(padded_lsf), 0.6)
 
-            opt = optimize.minimize(callable, (0,), bounds=((-20, 20),))
-            shift,  = opt.x
-            # shift,  = 0,
-            shifted_lsf = abs(np.fft.fftshift(interpfn(pointsarr + shift)))
-            shifted_lsf /= shifted_lsf.max()
-            # fft = fftpack.fft(np.fft.fftshift(shifted_lsf))
-            fft = fftpack.fft(shifted_lsf)
-            fft /= sum(abs(fft))
+            fft_real, fft_imag = normalised_centreing_fft(padded_lsf * window, return_type=COMPLEX_CARTESIAN_REAL_TUPLE)
 
-        zero = abs(fft[0])
-        interpfn = interpolate.InterpolatedUnivariateSpline(x[:32]*2, np.real(fft[:32]) / zero, k=1)
-        real = interpfn(x)
-        interpfn = interpolate.InterpolatedUnivariateSpline(x[:32]*2, np.imag(fft[:32]) / zero, k=1)
-        imag = interpfn(x)
-        otf = real + 1j * imag
-        point.raw_sfr_data = (real ** 2 + imag ** 2) ** 0.5
-        point.raw_otf_real = real
-        point.raw_otf_imag = imag
-        point.raw_otf_phase = np.angle(otf)
-        point.otf_phase = np.angle(otf)  # No calibration needed
-        point.raw_otf = otf
-        point.raw_esf_data = arr
-        point.raw_lsf_data = shifted_lsf
-        point.has_phase = True
-    return points
+
+            # plt.plot(correction)
+            # plt.show()
+
+            # fft = scipyfftpack.fft(scipyfftpack.fftshift(padded_lsf))
+            # fft = scipyfftpack.fft(padded_lsf)
+            # fft /= abs(fft[0])
+            # fft_real = fft.real
+            # fft_imag = fft.imag
+            # if point.filenumber == 9 and point.x > 5100 and point.y > 3500:
+            #     plt.plot(arr)
+            #     plt.show()
+            # plt.plot(x[:4]*4, abs(fft)[:4])
+            # plt.plot(x[:32] * 2, abs(fft_real + 1j * fft_imag)[:32], label="fft")
+            # plt.plot(x[:64], point.raw_sfr_data[:64], label="mtfm")
+            # plt.legend()
+            # plt.show()
+            #
+            # exit()
+
+            interpfn = interpolate.InterpolatedUnivariateSpline(x[:32] * 2, fft_real[:32]*correction, k=1)
+            real = interpfn(RAW_SFR_FREQUENCIES)
+            interpfn = interpolate.InterpolatedUnivariateSpline(x[:32] * 2, fft_imag[:32]*correction, k=1)
+            imag = interpfn(RAW_SFR_FREQUENCIES)
+            otf = real + 1j * imag
+            height = calc_image_height(point.x, point.y)
+            # if point.filenumber == 9 and 4600 < point.x < 5000 and 3200 < point.y < 3600:
+            neg = (min(arr) - min(arr[0], arr[-1])) / (arr.max() - arr.min())
+            # if point.filenumber == 9 and 0.6 < height < 0.8:
+            if neg < -0.02:
+                print(neg)
+                print(point)
+                # plt.plot(RAW_SFR_FREQUENCIES, point.raw_sfr_data)
+                # plt.plot(RAW_SFR_FREQUENCIES, abs(otf))
+                # plt.plot(RAW_SFR_FREQUENCIES, abs(otf) / point.raw_sfr_data)
+                plt.plot(arr)
+                plt.show()
+            point.raw_sfr_data = (real ** 2 + imag ** 2) ** 0.5
+            point.raw_otf = otf
+            point.has_phase = True
+            # plt.plot(RAW_SFR_FREQUENCIES, point.raw_sfr_data)
+            # plt.show()
+            # point.raw_otf_real = real
+            # point.raw_otf_imag = imag
+            # point.raw_otf_phase = np.angle(otf)
+            # point.otf_phase = np.angle(otf)  # No calibration needed
+            # point.raw_esf_data = arr
+            # point.raw_lsf_data = padded_lsf
+            goodpoints.append(point)
+    if point and point.filenumber == 190:
+        exit()
+    x_arr = np.array([point.x for point in goodpoints])
+    y_arr = np.array([point.y for point in goodpoints])
+    rad = ((x_arr - IMAGE_WIDTH/2) ** 2 + (y_arr - IMAGE_HEIGHT/2) ** 2) ** 0.5
+    ang = (np.arctan2((x_arr - IMAGE_WIDTH/2), (y_arr - IMAGE_HEIGHT/2)) + 9*np.pi/4) % (np.pi*2)
+
+    attempt_to_spot_faulty_flips = False
+
+    if attempt_to_spot_faulty_flips:
+        for point in goodpoints:
+            # continue
+            if point.angle < 10 and 2700 < point.x < 3300 and point.y < 2000:
+                p_ang = (np.arctan2(point.x - IMAGE_WIDTH/2, point.y - IMAGE_HEIGHT/2) + 9*np.pi/4) % (np.pi*2)
+                p_rad = ((point.x - IMAGE_WIDTH/2) ** 2 + (point.y - IMAGE_HEIGHT/2)**2) ** 0.5
+                point_distances = (((rad - p_rad) / IMAGE_DIAGONAL * 60)**2 + (ang - p_ang)**2 * 1) ** 0.5
+                point_distances = abs((rad - p_rad) / IMAGE_DIAGONAL * 60)
+                too_far_angle = abs(p_ang - ang) > 0.7
+                point_distances[too_far_angle] += 1e8
+                # point_distances = (rad - p_rad)**2
+                sortix = np.argsort(point_distances)
+                sortix = sortix[point_distances[sortix] < 1e6]
+                y = []
+                # plt.ylim(-10.5, 10.5)
+                for ix in sortix:
+                    print(goodpoints[ix].flipped)
+                    if points[ix].is_meridional != point.is_meridional:
+                        continue
+                    if points[ix].flipped != point.flipped:
+                        continue
+                    px , py= goodpoints[ix].x, goodpoints[ix].y
+                    # print(px, py, np.arctan2(px, py), ((px-IMAGE_WIDTH/2) **2 + (py-IMAGE_HEIGHT/2) **2)**0.5, rad[ix])
+                    # print(x_arr[ix], y_arr[ix])
+                    y.append(goodpoints[ix].raw_otf.imag[:40].sum())
+                avg = np.mean(y[1:])
+                std = np.std(y[1:])
+                tol = 1.5
+                if abs(y[0] - avg) > std*tol:
+                    print("glarg")
+                    if abs(-y[0] - avg) < std*tol:
+                        point.raw_otf = point.raw_otf.real - 1j * point.raw_otf.imag
+
+                        print("Replace!")
+                    pass
+                # plt.xlim(0, IMAGE_WIDTH)
+                # plt.ylim(0, IMAGE_HEIGHT)
+                # plt.plot(x_arr[sortix[:40]], y_arr[sortix[:40]], 's')
+                # plt.show()
+                # plt.plot(y, 's')
+                # plt.show()
+
+    join_sides_of_squares = True
+
+    new_points = []
+    cache = {}
+    if join_sides_of_squares:
+        for point in goodpoints:
+            squareid = point.squareid
+            if squareid < 0:
+                continue
+            for point_compare in goodpoints:
+                if point_compare.squareid != squareid:
+                    continue
+                if point.is_saggital != point_compare.is_saggital:
+                    # cache.get('squareid', []).append(point_compare)
+                    continue
+                if point_compare is point:
+                    continue
+                mean_x = (point.x + point_compare.x) / 2
+                mean_y = (point.y + point_compare.y) / 2
+                mean_mtf = (abs(point.raw_otf) + abs(point_compare.raw_otf)) / 2
+                mean_imag = (point.raw_otf.imag + point_compare.raw_otf.imag) / 2
+                mean_real = (mean_mtf**2 - mean_imag**2)**0.5
+
+                # mean_angle = (np.angle(point.raw_otf) + np.angle(point_compare.raw_otf)) / 2
+                mean_otf = mean_real + 1j * mean_imag
+                # print(point_compare)
+                # print(point)
+                if point.filenumber > 500000:
+                    # plt.plot(point.raw_otf.real, label="p1r")
+                    # plt.plot(point_compare.raw_otf.real, label="p2r")
+                    # plt.plot(point_compare.raw_otf.imag, label="p2i")
+                    # plt.plot(point.raw_otf.imag, label="p1i")
+                    plt.plot(abs(point.raw_otf), label="p1abs")
+                    plt.plot(abs(point_compare.raw_otf), label="p2abs")
+                    plt.plot(mean_otf.real, label="mr")
+                    plt.plot(mean_otf.imag, label="mi")
+                    plt.plot(abs(mean_otf), label="mabs")
+                    plt.legend()
+                    plt.show()
+                point.x = mean_x
+                point.y = mean_y
+                point.raw_otf = mean_otf
+                point.raw_sfr_data = abs(mean_otf)
+                point_compare.squareid = np.nan  # Take it out of matching
+                # print(point)
+                # print()
+                new_points.append(point)
+                break
+
+        goodpoints = new_points
+    return goodpoints
+
     points = [point for point in points if point is not None]
 
     radius = 1500
@@ -582,9 +822,21 @@ def process_esfs(esfs, points):
         xscan = np.sin(angle) * radius + 3000
         yscan = np.cos(angle) * radius + 2000
         points.sort(key=lambda p: ((p.x - xscan)**2 + (p.y - yscan)**2)**0.5, reverse=False)
-        for point in points:
-            if point.is_saggital:
+        square = points[0].squareid
+        squarepoints = [point for point in points if point.squareid == square]
+        squarepoints.sort(key=lambda p: 0 if p.is_saggital else 1)
+        # print(xscan, yscan, len([0 for point in points if point.squareid == square]))
+        squarepoints = points
+        for point in squarepoints:
+            # if point.squareid != square:
+            #     continue
+            if not point.is_saggital:
                 continue
+            if point.x < 2900:
+                continue
+            if point.x > 3100:
+                continue
+
             print(point)
             plt.plot(point.raw_sfr_data[:32], label="Magnitude")
             # plt.plot(np.abs(res[:16] / zero), label=)
@@ -597,4 +849,3 @@ def process_esfs(esfs, points):
             plt.legend()
             # plt.plot(point.raw_sfr_data)
             plt.show()
-            break

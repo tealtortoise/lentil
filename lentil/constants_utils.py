@@ -3,10 +3,12 @@ import os
 import timeit
 import logging
 import numpy as np
+from scipy import fftpack as scipyfftpack
 from scipy import interpolate, optimize
 import  matplotlib.pyplot as plt
 
 log = logging.getLogger(__name__)
+np.seterr(all='raise')
 log.setLevel(logging.DEBUG)
 
 ch = logging.StreamHandler()
@@ -17,7 +19,7 @@ SFRFILENAME = 'edge_sfr_values.txt'
 
 CURRENT_JITTER_CODE_VERSION = 2
 
-MULTIPROCESSING = 16  # Number of processes to use (1 to disable multiprocessing)
+MULTIPROCESSING = 8  # Number of processes to use (1 to disable multiprocessing)
 
 SAGITTAL = "SAGITTAL"
 MERIDIONAL = "MERIDIONAL"
@@ -58,12 +60,12 @@ SFR_HEADER = [
     'radialangle'
 ]
 
-FIELD_SMOOTHING_MIN_POINTS = 24
+FIELD_SMOOTHING_MIN_POINTS = 16
 FIELD_SMOOTHING_MAX_RATIO = 0.3
-FIELD_SMOOTHING_ORDER = 2
+FIELD_SMOOTHING_ORDER = 3
 
-LOW_BENCHMARK_FSTOP = 22
-HIGH_BENCHBARK_FSTOP = 4
+LOW_BENCHMARK_FSTOP = 14
+HIGH_BENCHBARK_FSTOP = 2.8
 # LOW_BENCHMARK_FSTOP = 32
 # HIGH_BENCHBARK_FSTOP = 13
 
@@ -186,6 +188,10 @@ def pixel_aperture_mtf(freq):
     freq = np.clip(freq, 0.0001, 1.0)
     return np.sin(np.pi*freq) / np.pi / freq
 
+
+def tukey(x, alpha):
+    tukey_window = np.cos(np.clip((abs(x) - 1.0 + alpha) * np.pi / alpha, 0, np.pi)) + 1
+    return tukey_window
 
 def calc_image_height(x, y):
     """
@@ -514,7 +520,15 @@ def convert_complex(tup, type):
         return tup[0] + 1j * tup[1]
     if type == COMPLEX_POLAR_TUPLE:
         r, i = tup
-        return (r**2 + i**2)**0.5, np.arctan2(r, i)
+        return (r**2 + i**2)**0.5, np.angle(r + 1j * i)
+
+def convert_complex_from_polar(tup, type):
+    if type == COMPLEX_CARTESIAN_REAL_TUPLE:
+        return tup[0] * np.cos(tup[1]), tup[0] * np.sin(tup[1])
+    if type == COMPLEX_CARTESIAN:
+        return tup[0] * np.exp(1j * tup[1])
+    if type == COMPLEX_POLAR_TUPLE:
+        return tup
 
 def tryfloat(inp):
     try:
@@ -672,16 +686,24 @@ def get_good_fft_sizes():
             else:
                 runtimes = 2
             for _ in range(runtimes):
-                reps = int(10 * (2048 + 256)**2 / (size+256)**2)
+                reps = int(100 * (2048 + 256)**2 / (size+256)**2)
                 # time = timeit.timeit("ndimage.affine_transform(cupy.abs(fftpack.fft(arr))**2, transform, offset, order=1)", number=reps,
                 #                      setup="from cupyx.scipy import fftpack, ndimage; import cupy;"
                 #                            "transform = cupy.array([[1.01,0.01],[0.99, -0.01]]);offset=0.01;"
                 #                            "arr = cupy.ones(({},{}), dtype='complex128') * 0.2 + 0.1j".format(size, size)) / reps * 1000
                 reps = int(2 * (2048 + 256)**2 / (size+256)**2)
-                time = timeit.timeit("ndimage.affine_transform(numpy.abs(fftpack.fft(arr))**2, transform, offset, order=1)", number=reps,
-                                     setup="from scipy import fftpack, ndimage; import numpy;"
-                                           "transform = numpy.array([[1.01,0.01],[0.99, -0.01]]);offset=0.01;"
-                                           "arr = numpy.ones(({},{}), dtype='complex128') * 0.2 + 0.1j".format(size, size)) / reps * 1000
+                # time = timeit.timeit("ndimage.affine_transform(numpy.abs(fftpack.fft(arr))**2, transform, offset, order=1)", number=reps,
+                #                      setup="from scipy import fftpack, ndimage; import numpy;"
+                #                            "transform = numpy.array([[1.01,0.01],[0.99, -0.01]]);offset=0.01;"
+                #                            "arr = numpy.ones(({},{}), dtype='complex128') * 0.2 + 0.1j".format(size, size)) / reps * 1000
+                time = timeit.timeit("cupy.abs(fftpack.fft(arr))**2", number=reps,
+                                     setup="from cupyx.scipy import fftpack, ndimage; import cupy;"
+                                           "transform = cupy.array([[1.01,0.01],[0.99, -0.01]]);offset=0.01;"
+                                           "arr = cupy.ones(({},{}), dtype='complex128') * 0.2 + 0.1j".format(size, size)) / reps * 1000
+                # time = timeit.timeit("numpy.abs(fftpack.fft(arr))**2", number=reps,
+                #                      setup="from scipy import fftpack, ndimage; import numpy;"
+                #                            "transform = numpy.array([[1.01,0.01],[0.99, -0.01]]);offset=0.01;"
+                #                            "arr = numpy.ones(({},{}), dtype='complex128') * 0.2 + 0.1j".format(size, size)) / reps * 1000
             print("FFT {}, {}s".format(size, time))
             if time < best_time:
                 print("Worth it!")
@@ -692,11 +714,12 @@ def get_good_fft_sizes():
 
 
 # CUDA_GOOD_FFT_SIZES = get_good_fft_sizes()
+# exit()
 CUDA_GOOD_FFT_SIZES = np.flip(np.array([2048, 2000, 1944, 1920, 1800, 1728, 1620, 1600, 1536, 1500, 1458,
                                 1440, 1350, 1296, 1280, 1200, 1152, 1080, 1024, 1000, 972, 960,
                                 900, 864, 810, 800, 768, 750, 720, 648, 640, 600, 576,
                                 540, 512, 486, 480, 450, 432, 400, 384, 324, 320, 300,
-                                288, 270, 256, 216, 160, 144, 128]))
+                                288, 270, 256, 216, 160, 144, 128, 96, 64]))
 CPU_GOOD_FFT_SIZES = np.flip(np.array([2048, 2000, 1944, 1800, 1728, 1620, 1536, 1500, 1458, 1440, 1350,
        1296, 1200, 1152, 1080, 1024, 1000,  972,  900,  864,  810,  768,
         750,  720,  648,  640,  600,  576,  540,  512,  500,  486,  480,
@@ -711,3 +734,226 @@ class NoPhaseData(Exception):
     pass
 class InvalidFrequency(Exception):
     pass
+
+
+def _norm_phase_and_magnitude(r, i, x, inc_neg_freqs=False, return_type=COMPLEX_CARTESIAN, plot=False):
+    """
+    Normalises complex phase in array
+
+    Zero frequency is assumed to be at index 0 (ie. unshifted)
+
+    :param r: Real component
+    :param i: Imaginary component (as real float)
+    :param x: Frequencies
+    :param inc_neg_freqs: Includes second half of FFT with neg. frequencies
+    :param return_type: default COMPLEX_CARTESIAN (ie. real + imag * 1j)
+    :return: Normalised result
+    """
+
+    # def custom_unwrap(pha):
+
+
+
+    if not inc_neg_freqs:
+        meanlen = len(x)
+    else:
+        meanlen = int(len(x) / 2)
+    mag = (r ** 2 + i ** 2) ** 0.5
+    phase = np.unwrap(np.angle(r + i*1j))
+    weights = mag[:meanlen] * np.linspace(1,0,meanlen)
+    weights = np.zeros(meanlen)
+    # weights[1] = 1
+    weights = mag[:meanlen] ** 2
+    meanphase = np.average(phase[:meanlen], weights=weights)
+    mean_x = np.average(x[:meanlen], weights=weights)
+    phase_shift = - (meanphase / mean_x) * x
+    if plot:
+        oldphase = phase.copy()
+    phase += phase_shift
+    if inc_neg_freqs and 1:
+        phase[meanlen:] = -np.flip(phase[:meanlen])
+
+    # new_meanphase = np.average(phase[:meanlen], weights=weights)
+    # if new_meanphase < 0:
+    #     phase *= -1
+
+    if x[0] == 0:
+        mag /= mag[0]
+    if plot:
+        plotx = x[:meanlen]
+        if inc_neg_freqs and 0:
+            s = np.fft.fftshift
+        else:
+            s = lambda _: _
+        fig, (a1, a2) = plt.subplots(1,2)
+        a1.plot(x, s(r), label='real')
+        a1.plot(x, s(i), label='imag')
+        # a1.plot(plotx, weights, label='weights')
+        a1.plot(x, s(mag), label='mag')
+        a2.plot(x, s(oldphase), label='oldphase')
+        a2.plot(x, s(phase), label='newphase')
+        a2.plot(x, s(phase_shift), label="phaseshift")
+        nr, ni = convert_complex_from_polar((mag, phase), COMPLEX_CARTESIAN_REAL_TUPLE)
+        a1.plot(x, s(nr), label="new real")
+        a1.plot(x, s(ni), label="new imag")
+        a1.legend()
+        a2.legend()
+        plt.show()
+    return convert_complex_from_polar((mag, phase), return_type)
+
+
+def ___test_phase_normalisation():
+    a = fastgauss(np.arange(64)**2, 1.0, 32**2, 14**2)
+    b = np.flip(fastgauss(np.arange(64)**2, 1.0, 32**2, 14**2))
+    a /= a.max()
+    b /= b.max()
+    a = np.roll(a, -3)
+    b = np.roll(b, 7)
+    ft = np.fft.fft(np.fft.fftshift(a))
+    ft_b = np.fft.fft(np.fft.fftshift(b))
+    ftr, fti = normalised_centreing_fft(ft.real, ft.imag, np.arange(64), return_type=COMPLEX_CARTESIAN_REAL_TUPLE, inc_neg_freqs=True, plot=True)
+    ftr_b, fti_b = normalised_centreing_fft(ft_b.real, ft_b.imag, np.arange(64), return_type=COMPLEX_CARTESIAN_REAL_TUPLE, inc_neg_freqs=True, plot=True)
+    plt.plot(a, '--', color="green", alpha=0.5)
+    plt.plot(b, '--', color="gray", alpha=0.5)
+    plt.plot(ftr[:16], color="red", alpha=0.5)
+    plt.plot(fti[:16], color="purple", alpha=0.5)
+    plt.plot(ftr_b[:16], color="orange", alpha=0.5)
+    plt.plot(fti_b[:16], color="blue", alpha=0.5)
+    # plt.plot(ft.real[:16], '--', color="red", alpha=0.5)
+    # plt.plot(ft.imag[:16], '--', color="purple", alpha=0.5)
+    newgauss = np.fft.fftshift(np.fft.ifft(ftr + 1j * fti))
+    newgauss_b = np.fft.fftshift(np.fft.ifft(ftr_b + 1j * fti_b))
+    plt.plot(newgauss.real / newgauss.real.max(), color="green", alpha=0.5)
+    plt.plot(newgauss_b.real / newgauss_b.real.max(), color="black", alpha=0.5)
+    plt.show()
+
+
+def normalised_centreing_fft(y, x=None, return_type=COMPLEX_CARTESIAN, engine=np, fftpack=None, plot=False):
+    """
+    Normalises complex wrapped_phase in array
+
+    Zero frequency is assumed to be at index 0 (ie. unshifted)
+
+    :param x: x-axis
+    :param y: input to fft
+    :param return_type: default COMPLEX_CARTESIAN (ie. real + imag * 1j)
+    :return: Normalised result
+    """
+
+    if x is None:
+        x = engine.arange(len(y))
+
+    if fftpack is None:
+        fftpack = scipyfftpack
+    yzers = (y == 0).sum() == len(y)
+    if yzers:
+        return convert_complex((np.zeros_like(x), np.zeros_like(x)), type=return_type)
+
+    if y.sum() == 0:
+        mid = x.mean()
+    else:
+        mid = (x * y).sum() / y.sum()
+
+    ftr = fftpack.fft(engine.fft.fftshift(y))
+    ftr /= abs(ftr[0])
+    meanlen = int(len(x) / 2)
+
+    mag = abs(ftr)
+    phase = engine.angle(ftr)
+    phase_shift = (mid - meanlen) * x
+    if plot:
+        oldphase = phase.copy()
+    phase += phase_shift * engine.pi * 2 / len(x)
+    phase[meanlen:] = -engine.flip(phase[:meanlen], axis=0)
+
+    if plot:
+        plotx = x[:meanlen]
+        if 0:
+            s = engine.fft.fftshift
+        else:
+            s = lambda _: _
+        fig, (a1, a2) = plt.subplots(1,2)
+        a1.plot(x, s(ftr.real), label='real')
+        a1.plot(x, s(ftr.imag), label='imag')
+        # a1.plot(plotx, weights, label='weights')
+        a1.plot(x, s(mag), label='mag')
+        a2.plot(x, s(oldphase), label='oldphase')
+        a2.plot(x, s(phase), label='oldwrappedphase')
+        # a2.plot(x, s(wrapped_phase), label='newphase')
+        a2.plot(x, s(phase_shift), label="phaseshift")
+        nr, ni = convert_complex_from_polar((mag, phase), COMPLEX_CARTESIAN_REAL_TUPLE)
+        a1.plot(x, s(nr), label="new real")
+        a1.plot(x, s(ni), label="new imag")
+        a1.legend()
+        a2.legend()
+        plt.show()
+    return convert_complex_from_polar((mag, phase), return_type)
+
+
+def _test_phase_normalisation():
+    a = fastgauss(np.arange(64)**2, 1.0, 32**2, 14**2)
+    # a = fastgauss(np.arange(64), 1.0, 32, 5)
+    b = fastgauss(np.arange(64)**2, 1.0, 32**2, 14**2)
+    # b = np.flip(fastgauss(np.arange(64), 1.0, 32, 5))
+    a /= a.max()
+    b /= b.max()
+    a = np.roll(a, -7)
+    b = np.roll(b, 4)
+    ftr, fti = normalised_centreing_fft(np.arange(64), a, return_type=COMPLEX_CARTESIAN_REAL_TUPLE, plot=True)
+    ftr_b, fti_b = normalised_centreing_fft(np.arange(64), b, return_type=COMPLEX_CARTESIAN_REAL_TUPLE, plot=True)
+    plt.plot(a, '--', color="green", alpha=0.5)
+    plt.plot(b, '--', color="gray", alpha=0.5)
+    plt.plot(ftr[:16], color="red", alpha=0.5)
+    plt.plot(fti[:16], color="purple", alpha=0.5)
+    plt.plot(ftr_b[:16], color="orange", alpha=0.5)
+    plt.plot(fti_b[:16], color="blue", alpha=0.5)
+    # plt.plot(ft.real[:16], '--', color="red", alpha=0.5)
+    # plt.plot(ft.imag[:16], '--', color="purple", alpha=0.5)
+    newgauss = np.fft.fftshift(np.fft.ifft(ftr + 1j * fti))
+    newgauss_b = np.fft.fftshift(np.fft.ifft(ftr_b + 1j * fti_b))
+    plt.plot(newgauss.real / newgauss.real.max(), color="green", alpha=0.5)
+    plt.plot(newgauss_b.real / newgauss_b.real.max(), color="black", alpha=0.5)
+    plt.show()
+
+
+def __test_normalisation2():
+    x = np.arange(64)
+    # ga = np.roll(fastgauss(np.arange(64)**2, 1.0, 32**2, 14**2), -2)
+    # gb = np.roll(fastgauss(np.arange(64)**2, 1.0, 32**2, 14**2), 3)
+    ga = np.roll(fastgauss(np.arange(64), 1.0, 32, 3.5), -18)
+    gb = np.roll(fastgauss(np.arange(64), 1.0, 32, 3.5), 2)
+
+    print((x*ga).sum() / ga.sum())
+    print((x*gb).sum() / gb.sum())
+
+    f, (ax1, ax2) = plt.subplots(1,2)
+    ax1.plot(x, ga, label="ga")
+    ax1.plot(x, gb, label="gb")
+
+    ffta = np.fft.fft(np.fft.fftshift(ga))
+    fftb = np.fft.fft(np.fft.fftshift(gb))
+
+    ffta /= abs(ffta[0])
+    fftb /= abs(fftb[0])
+
+    v_ffta = abs(ffta) > 1e-10
+    v_fftb = abs(fftb) > 1e-10
+
+    ff = lambda _: _
+    aa = ff(np.angle(ffta))
+    aa[~v_ffta] = np.nan
+    ab = ff(np.angle(fftb))
+    ab[~v_fftb] = np.nan
+    ax2.plot(x, aa, label="angle a")
+    ax2.plot(x, ab, label="angle b")
+    ax2.plot(x, np.zeros_like(x))
+    ax1.plot(x, np.abs(ffta), label="mag a")
+    ax1.plot(x, np.abs(fftb), label="mag b")
+    ax1.plot(x, np.imag(ffta), label="i a")
+    ax1.plot(x, np.imag(fftb), label="i b")
+    ax1.legend()
+    ax2.legend()
+    plt.show()
+
+    # _test_phase_normalisation()
+    exit()

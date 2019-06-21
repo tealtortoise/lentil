@@ -4,7 +4,7 @@ import prysm
 import lentil.constants_utils
 from lentil.constants_utils import *
 from lentil import wavefront_config
-from lentil.focus_set import FocusSet
+from lentil.focus_set import FocusSet, read_wavefront_data
 # from lentil.focus_set import estimate_focus_jitter
 from lentil.wavefront_config import SPACIAL_FREQS, MODEL_WVLS, EXTREME_FOCUS_WEIGHT, HIGH_FREQUENCY_WEIGHT, CHEAP_LOCA_CUTOFF, USE_EXISTING_PARAMETER_IF_FIXED
 
@@ -19,7 +19,11 @@ class TerminateOptException(Exception):
 
 def convert_wavefront_dicts_to_p_dicts(wfdd):
     ps = []
-    nomfstops = wfdd['fstops']
+    print(wfdd)
+    try:
+        nomfstops = wfdd['fstops']
+    except KeyError:
+        return []
     min_fstop = np.inf
     for stop in nomfstops:
         p = {}
@@ -71,7 +75,7 @@ def encode_parameter_tuple(dataset, use_initial=False, use_existing=True,
     for pnum, pname in enumerate(fstop_first_params):
         paramconfigtup = wavefront_config.PARAMS_OPTIONS[pname]
         config_low , config_initial, config_high, f_lambda, optim_per_focusset, scale = paramconfigtup
-        scale *= wavefront_config.SCALE_EXTRA[pnum]
+        scale *= wavefront_config.SCALE_EXTRA.get(pname, 1.0)
 
         if optim_per_focusset == wavefront_config.OPT_PER_FOCUSSET:
             loops = len(dataset)
@@ -164,7 +168,7 @@ def decode_parameter_tuple(tup, passed_options_ordering, dataset, use_existing_f
         # Avoid large gradients due to large pupil change with fstop
         for tix, ((name, setapplies, fieldapplies), val) in enumerate(zip(passed_options_ordering, tup)):
             config_low , config_initial, config_high, f_lambda, optim_per_focusset, scale = wavefront_config.PARAMS_OPTIONS[name]
-            scale *= wavefront_config.SCALE_EXTRA[tix]
+            scale *= wavefront_config.SCALE_EXTRA.get(name, 1.0)
             if name == 'fstop':
                 for a in setapplies:
                     opt_fstops[a] = val / scale * dataset[a].exif.aperture
@@ -173,7 +177,7 @@ def decode_parameter_tuple(tup, passed_options_ordering, dataset, use_existing_f
 
     for tix, ((name, setapplies, fieldapplies), val) in enumerate(zip(passed_options_ordering, tup)):
         config_low , config_initial, config_high, f_lambda, optim_per_focusset, scale = wavefront_config.PARAMS_OPTIONS[name]
-        scale *= wavefront_config.SCALE_EXTRA[tix]
+        scale *= wavefront_config.SCALE_EXTRA.get(name, 1.0)
         for a in setapplies:
             if name == "fstop":
                 fmul = f_lambda(nominal_fstops[a], base_fstop)
@@ -201,7 +205,7 @@ def decode_parameter_tuple(tup, passed_options_ordering, dataset, use_existing_f
             existing_dict = data.wavefront_data[-1][1]
             existingkey = "p.opt:" + name
 
-            if use_existing_fixed and existingkey in existing_dict:
+            if use_existing_fixed and existingkey in existing_dict and optim_per_focusset is not wavefront_config.LOCK:
                 value = existing_dict[existingkey]
                 ps[a][name] = value
                 pfix["{}.{}".format(name, a)] = value
@@ -273,23 +277,53 @@ def _process_focusset(num):
     else:
         return_focusset = False
 
-    if not from_scratch_:
+    wfd = [("", {})]
+    ps = None
+    if not from_scratch_ and num == 0:
         wfd = focusset.read_wavefront_data(overwrite=True, x_loc=x_loc_, y_loc=y_loc_)
+        if wfd[-1][1] != {}:
+            try:
+                ps = convert_wavefront_dicts_to_p_dicts(wfd[-1][1])
+                p = ps[0]
+                if 'df_step' in ps[0] and 'df_offset' in ps[0]:
+                    hints_needed = False
+                else:
+                    hints_needed = True
+            except IndexError:
+                p = None
+                hints_needed = True
+        else:
+            p = None
+            hints_needed = True
+
+    elif not from_scratch_ and all_ps_ is not None:
+        try:
+            p = all_ps_[num]
+            hints_needed = False
+        except IndexError:
+            hints_needed = True
     else:
-        wfd = [("", {})]
+        hints_needed = True
+
     # print("wfd ", wfd)
     data = lentil.constants_utils.FocusSetData()
     data.wavefront_data = wfd
     sag_ob = focusset.get_interpolation_fn_at_point(IMAGE_WIDTH / 2, IMAGE_HEIGHT / 2, AUC, SAGITTAL)
     focus_values = sag_ob.focus_data[:]
 
-    if wfd[-1][1] == {} and num == 0:
+    if hints_needed:
         tup = focusset.find_best_focus(IMAGE_WIDTH / 2, IMAGE_HEIGHT / 2, axis=MERIDIONAL, _return_step_data_only=True,
                                        _step_estimation_posh=True)
         est_defocus_rms_wfe_step, longitude_defocus_step_um, coc_step, image_distance,\
             subject_distance, fit_peak_y, prysm_offset = tup
         data.hints['df_step'] = est_defocus_rms_wfe_step
         data.hints['df_offset'] = prysm_offset
+    else:
+        if p is not None:
+            if 'df_step' in p:
+                data.hints['df_step'] = p['df_step']
+            if 'df_offset' in p:
+                data.hints['df_offset'] = p['df_offset']
     # exit()
     mtf_means = sag_ob.sharp_data
 
@@ -306,13 +340,9 @@ def _process_focusset(num):
     # Move on to get full frequency data
 
     # Find centre index
-    print(focus_values)
-    # print(list(range(len(focus_values))))
-    # print(cauchy_peak_x)
     centre_idx = int(interpolate.InterpolatedUnivariateSpline(focus_values,
                                                               range(len(focus_values)),
                                                               k=1)(cauchy_peak_x) + 0.5)
-
     if type(fs_slices_) is int:
         size = fs_slices_
     else:
@@ -366,6 +396,8 @@ def _process_focusset(num):
     data.focus_values = focus_values
     data.max_pos = max_pos
     data.strehl_ests = strehl_ests
+    if num == 0:
+        data.all_ps = []
     weights = get_weights(merged_mtf_values.shape, focus_values, cauchy_peak_x)
 
     assert weights.shape == merged_mtf_values.shape
@@ -395,6 +427,7 @@ def pre_process_focussets(focussets, fs_slices, skip, avoid_ends=1, from_scratch
         global x_loc_
         global y_loc_
         global complex_otf_
+        global all_ps_
         focussets_ = focussets
         ob_ = ob
         skip_ = skip
@@ -404,6 +437,16 @@ def pre_process_focussets(focussets, fs_slices, skip, avoid_ends=1, from_scratch
         x_loc_ = x_loc
         y_loc_ = y_loc
         complex_otf_ = complex_otf
+        all_ps_ = all_ps
+
+    if type(focussets[0]) is str:
+        wfd = read_wavefront_data(focusset_path=focussets[0], x_loc=x_loc, y_loc=y_loc)
+        try:
+            dct = wfd[-1][1]
+            all_ps = convert_wavefront_dicts_to_p_dicts(dct)
+        except IndexError:
+            all_ps = None
+
 
     if not wavefront_config.DISABLE_MULTIPROCESSING:
         pool = multiprocessing.Pool(initializer=init)
@@ -415,6 +458,9 @@ def pre_process_focussets(focussets, fs_slices, skip, avoid_ends=1, from_scratch
     if type(focussets[0]) is str:
         datas, focussets = zip(*datas)
 
+    # if 'all_ps' in datas[0]:
+    #     for p, data in zip(datas[0].all_ps[1:], datas[1:]):
+    #         data.hints = [("", p)]
     #
     # If data is old and saved before fstop data masking compensated in try_wavefront()
     #
@@ -828,24 +874,37 @@ def optimise_loca_colvolution_coeffs():
     pass
 
 
-def plot_nominal_psf(*args, wfd={}):
+def plot_nominal_psf(*args, wfdd={}, x_loc=IMAGE_WIDTH/2, y_loc=IMAGE_HEIGHT/2):
     # plt.cla()
     # plt.close()
+    disable_plot = False
     defocuses = [-2.4, 0, 2.4, 4.8]
-    defocuses = np.linspace(-10, 10, 5)
-    f, axes = plt.subplots(len(args), len(defocuses), sharey=True, sharex=True)
-    if len(args) == 1:
-        axes = axes
+    defocus_amount = 4
+    defocuses = np.linspace(-defocus_amount, defocus_amount, 5) + 0
+    if not disable_plot:
+        f, axes = plt.subplots(len(args), len(defocuses), sharey=True, sharex=True)
+        if len(args) == 1:
+            axes = axes
     min_fstop = min(p['fstop'] for p in args)
     for na, dct in enumerate(args):
+
         df_offset = dct["df_offset"]
         for nd, defocus in enumerate(defocuses):
             alter = (dct['fstop'] / min_fstop) ** 2
             # alter = 1
             s = wavefront_test.TestSettings(defocus / alter + df_offset, dct)
-            s.return_type = wavefront_test.RETURN_PSF
+            # s.p = dict(base_fstop=1.2, fstop=1.2 * 2 ** (na / 2), df_offset=dct['df_offset'], df_step=dct['df_step'],
+            #            v_scr=1, lca_slr=0, spca2=0.0)
+            # s.p['v_y'] = -0.6
+            # s.p['v_slr'] = 0
+            s.x_loc = x_loc
+            s.y_loc = y_loc
+            s.p['tca_slr'] = 1
+            s.return_psf = True
             s.pixel_vignetting = True
             s.lens_vignetting = True
+            s.phasesamples = 384
+            s.fftsize = 768
             psf = try_wavefront(s).psf
             # zs = {}
             # for key, value in dct.items():
@@ -857,9 +916,22 @@ def plot_nominal_psf(*args, wfd={}):
             # print(zs)
             # pupil = prysm.FringeZernike(**zs, norm=True, dia=10)
             # psf = prysm.PSF.from_pupil(pupil, efl=30, Q=5)
-            if len(args) == 1:
-                ax = axes[nd]
-            else:
-                ax = axes[na, nd]
-            psf.plot2d(ax=ax, fig=f, axlim=60)
+            if not disable_plot:
+                if len(args) == 1:
+                    ax = axes[nd]
+                else:
+                    ax = axes[na, nd]
+                psf.plot2d(ax=ax, fig=f, axlim=defocus_amount*4)
     plt.show()
+
+
+def build_normalised_scale_dictionary(gradients, ordering, target=1.0):
+    listdct = {}
+    for gradient, (pname, applies, _) in zip(gradients, ordering):
+        listdct[pname] = []
+        for _ in applies:
+            listdct[pname].append(target * gradient)
+    dct = {}
+    for k, v in listdct.items():
+        dct[k] = abs(np.array(v).mean())
+    return dct

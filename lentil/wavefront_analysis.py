@@ -66,9 +66,12 @@ def plot_chromatic_aberration(focusset):
     plt.legend()
     plt.show()
 
-def plot_nominal_psfs(focusset, stop_downs=None):
-    wfd = focusset.read_wavefront_data(overwrite=True)
+
+def plot_nominal_psfs(focusset, stop_downs=(0, 1, 2, 3), x_loc=None, y_loc=None):
+    wfd = focusset.read_wavefront_data(overwrite=True, x_loc=x_loc, y_loc=y_loc)
     ps = convert_wavefront_dicts_to_p_dicts(wfd[-1][1])
+    print(wfd[-1][1])
+    x, y = wfd[-1][1]['x.loc'], wfd[-1][1]['y.loc']
     print(ps)
     if stop_downs:
         args = []
@@ -77,6 +80,6 @@ def plot_nominal_psfs(focusset, stop_downs=None):
             print(new_p)
             args.append(new_p)
             new_p['fstop'] *= 2 ** (stop / 2)
-        plot_nominal_psf(*args, wfd=wfd[-1][1])
+        plot_nominal_psf(*args, wfdd=wfd[-1][1], x_loc=x, y_loc=y)
     else:
-        plot_nominal_psf(ps[0], wfd=wfd[-1][1])
+        plot_nominal_psf(ps[0], wfdd=wfd[-1][1], x_loc=x, y_loc=y)

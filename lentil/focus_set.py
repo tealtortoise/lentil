@@ -252,11 +252,13 @@ class FocusSet:
         exif = EXIF(filenames[0][1])
         self.exif = exif
         for entrynumber, pathname, filename in filenames:
-            if entrynumber > -np.inf:
+            if 1:
                 print("Opening file {}".format(pathname))
                 try:
-                    field = SFRField(pathname=pathname, calibration=calibration, exif=exif, load_complex=load_complex)
+                    field = SFRField(pathname=pathname, calibration=calibration, exif=exif, load_complex=load_complex,
+                                     filenumber=entrynumber)
                 except NotEnoughPointsException:
+                    print("Not enough points, skipping!")
                     continue
                 field.filenumber = entrynumber
                 field.filename = filename
@@ -364,7 +366,7 @@ class FocusSet:
         locs = 1
 
 
-        multi = 8
+        multi = 0
 
         paramlst = []
         for x_idx, y_idx, x, y in gridit:
@@ -558,7 +560,7 @@ class FocusSet:
             best_s = self.find_best_focus(x, y, freq, SAGITTAL, plot, show, strict)
             best_m = self.find_best_focus(x, y, freq, MERIDIONAL, plot, show, strict)
             mid = FocusOb.get_midpoint(best_s, best_m)
-            if 0 and 0.6<calc_image_height(x, y)<0.7:
+            if 0 and 0.6 < calc_image_height(x, y) < 0.7:
                 print("     ", best_s.x_loc, best_s.y_loc, best_s.focuspos)
                 print("     ", best_m.x_loc, best_m.y_loc, best_m.focuspos)
                 print("     ", mid.x_loc, mid.y_loc, mid.focuspos)
@@ -576,8 +578,6 @@ class FocusSet:
         x_values = pos.focus_data
         y_values = pos.sharp_data
         interp_fn = pos.interpfn
-        # print(x_values)
-        # print(y_values)
         # exit()
         # Initial fit guesses
         highest_data_x_idx = np.argmax(y_values)
@@ -623,8 +623,8 @@ class FocusSet:
             # print(defocus_offset, defocus_step, aberr)
             out = []
             for defocus in defocuss:
-                pupil = prysm.NollZernike(Z4=(defocus - defocus_offset) * defocus_step * 0.575 - aberr / 2,
-                                          dia=10, norm=True,
+                pupil = prysm.NollZernike(Z4=(defocus - defocus_offset) * defocus_step * 0.575,#  - aberr / 2,
+                                          dia=10, norm=False,
                                           z11=aberr,
                                           z22=a2,
                                           wavelength=0.575,
@@ -892,14 +892,18 @@ class FocusSet:
         log.info("Removed {} out of {} field as duplicates".format(len(self.fields) - len(new_fields), len(self.fields)))
         self.fields = new_fields
 
-    def plot_best_sfr_vs_freq_at_point(self, x, y, axis=MEDIAL, x_values=None, secondline_fn=None, show=True):
+    def plot_best_sfr_vs_freq_at_point(self, x, y, axis=MEDIAL, x_values=None, secondline_fn=None, show=True, ax=None, fig=None):
+        if ax is None:
+            ax = plt.gca()
+            fig = ax.figure
         if x_values is None:
             x_values = RAW_SFR_FREQUENCIES[:32]
-        y = [self.find_best_focus(x, y, f, axis).sharp for f in x_values]
-        plt.plot(x_values, y)
-        plt.ylim(0,1)
+        y = [self.find_best_focus(x, y, f, axis, plot=True).sharp for f in x_values]
+        print(y)
+        ax.plot(x_values, y, marker='s')
+        ax.set_ylim(0,1)
         if secondline_fn:
-            plt.plot(x_values, secondline_fn(x_values))
+            ax.plot(x_values, secondline_fn(x_values))
         if show:
             plt.show()
 
@@ -909,7 +913,7 @@ class FocusSet:
             ax = fig.add_subplot(111, projection='3d')
         else:
             ax = fig.add_subplot(111)
-        freqs = np.concatenate((RAW_SFR_FREQUENCIES[:32:1], [AUC]))
+        freqs = np.concatenate((RAW_SFR_FREQUENCIES[:32:2], [AUC]))
         for nfreq, freq in enumerate(freqs):
             print("Running frequency {:.2f}...".format(freq))
             responses = []
@@ -940,16 +944,16 @@ class FocusSet:
                 else:
                     label = "{:.2f} cy/px".format(freq)
                 plt.plot(np.arange(len(self.fields)), np.log(responses) / (np.log(10) / 20.0),
-                         label=label, color=colour, alpha=1.0 if freq==AUC else 0.9)
+                         label=label, color=colour, alpha=1.0 if freq == AUC else 0.9)
         if waterfall:
             ax.set_xlabel("Spacial Frequency (cy/px")
             ax.set_ylabel("Focus position")
             ax.set_zlabel("SFR (dB - log scale)")
-            ax.set_zlim(-40, 0)
+            ax.set_zlim(-3, 0)
         else:
             ax.set_xlabel("Focus Position")
             ax.set_ylabel("SFR (dB (log scale))")
-            ax.set_ylim(-40,0)
+            ax.set_ylim(-3,0)
             ax.legend()
 
         ax.set_title("SFR vs Frequency for {}".format(self.exif.summary))
@@ -1500,26 +1504,10 @@ class FocusSet:
         return path
 
     def read_wavefront_data(self, overwrite, read_old=False, copy_old=True, read_autosave=True, x_loc=None, y_loc=None):
-        path = self.get_wavefront_data_path()
-        entry, number = scan_path(path, make_dir_if_absent=True, find_autosave=read_autosave, x_loc=x_loc, y_loc=y_loc)
-        if entry is not None:
-            lst = read_wavefront_file(entry.path)
-            return lst
-
-        if read_old:
-            try:
-                lst = read_wavefront_file(self.get_old_wavefront_data_path())
-                if copy_old:
-                    self.copy_old_wavefront_data_to_new()
-                if not overwrite:
-                    self.wavefront_data.extend(lst)
-
-                else:
-                    self.wavefront_data = lst
-                return lst
-            except FileNotFoundError:
-                pass
-        return [("", {})]
+        wfl = read_wavefront_data(self.get_wavefront_data_path(), read_autosave=read_autosave, x_loc=x_loc, y_loc=y_loc)
+        if overwrite:
+            self.wavefront_data = wfl
+        return wfl
 
     def copy_old_wavefront_data_to_new(self):
         self.read_wavefront_data(overwrite=True, copy_old=False, read_old=True)
@@ -1828,6 +1816,17 @@ def scan_path(path, make_dir_if_absent=False, find_autosave=False, x_loc=None, y
             return None, -1
         else:
             raise FileNotFoundError()
+
+
+def read_wavefront_data(path=None, focusset_path=None, read_autosave=True, x_loc=None, y_loc=None):
+    if path is None:
+        path = os.path.join(focusset_path, "wavefront_results")
+    entry, number = scan_path(path, make_dir_if_absent=True, find_autosave=read_autosave, x_loc=x_loc, y_loc=y_loc)
+    if entry is not None:
+        lst = read_wavefront_file(entry.path)
+        return lst
+
+    return [("", {})]
 
 
 def save_wafefront_data(path, wf_data, suffix="", quiet=False):

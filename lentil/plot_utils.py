@@ -332,7 +332,9 @@ class Scatter2D(FieldPlot):
                 weights = get_rcos_window2(x_data[OK], x, span)
                 points = weights.sum()
                 if points > points_limit:
-                    fn = interpolate.UnivariateSpline(x_data[OK], y_data[OK], weights, k=k, s=float("inf"))
+                    ixs = np.argsort(x_data[OK])
+
+                    fn = interpolate.UnivariateSpline(x_data[OK][ixs], y_data[OK][ixs], weights, k=k, s=float("inf"))
                     y_plot.append(fn(x))
                 else:
                     y_plot.append(float("nan"))

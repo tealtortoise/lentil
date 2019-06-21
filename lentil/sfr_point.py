@@ -12,7 +12,7 @@ class FFTPoint:
     Holds all data for one SFR edge analysis point
     """
 
-    def __init__(self, rowdata=None, rawdata=None, pixelsize=None, calibration=None, truncate_lobes=TRUNCATE_MTF_LOBES):
+    def __init__(self, rowdata=None, rawdata=None, pixelsize=None, calibration=None, truncate_lobes=TRUNCATE_MTF_LOBES, filenumber=-1):
         """
         Processes row from csv reader
 
@@ -20,6 +20,7 @@ class FFTPoint:
         :param pixelsize: pixel size in metres if required
         """
         self.has_phase = False
+        self.filenumber = filenumber
         if rowdata is not None:
             self.squareid = float(rowdata[0])
             self.x = float(rowdata[1])
@@ -27,6 +28,8 @@ class FFTPoint:
             self.angle = float(rowdata[3])
             self.radialangle = float(rowdata[4])
             floated = [float(cell) for cell in rowdata[5:-1]]
+            if sum(floated) == 0:
+                raise ValueError("All data is zero")
             if truncate_lobes:
                 self.raw_sfr_data = truncate_at_zero(floated)
             else:
@@ -55,10 +58,6 @@ class FFTPoint:
         else:
             self.calibration = np.ones((64,))
 
-        self.raw_otf_real = None
-        self.raw_otf_imag = None
-        self.raw_otf_phase = None
-        self.otf_phase = None  # No calibration needed
         self.raw_otf = None
 
     def get_complex_freq(self, cy_px=None, lp_mm=None, complex_type=COMPLEX_CARTESIAN):
@@ -124,9 +123,9 @@ class FFTPoint:
     def complex_interpolate_fn(self):
         def complex_interp_fn(freq, complex_type=COMPLEX_CARTESIAN):
             real_fn = interpolate.InterpolatedUnivariateSpline(lentil.constants_utils.RAW_SFR_FREQUENCIES,
-                                                        self.raw_otf_real * self.calibration, k=1)
+                                                        self.raw_otf.real * self.calibration, k=1)
             imaj_fn = interpolate.InterpolatedUnivariateSpline(lentil.constants_utils.RAW_SFR_FREQUENCIES,
-                                                        self.raw_otf_imag * self.calibration, k=1)
+                                                        self.raw_otf.imag * self.calibration, k=1)
 
             return convert_complex((real_fn(freq), imaj_fn(freq)), complex_type)
         return complex_interp_fn

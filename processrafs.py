@@ -8,7 +8,7 @@ import random
 import numpy as np
 import matplotlib.pyplot as plt
 
-
+ENABLE_CA_AND_DISTORTION = False
 
 IMAGE_WIDTH = 6000
 IMAGE_HEIGHT = 4000
@@ -149,7 +149,7 @@ for arg in argv[1:]:
         if entrynumber < startfile:
             continue
 
-        #if entrynumber != 8647:
+        # if entrynumber != 10:
         #    continue
 
         # Check for existing results
@@ -200,8 +200,13 @@ for arg in argv[1:]:
                     ca_exif = value
         print("Lens Model {}, Aperture {}, Focal Length {}".format(lens_model, aperture, focal_length))
 
-        distorted = check_if_distortion_corrections_needed(distortionexif)
-        caed = check_if_ca_corrections_needed(ca_exif)
+        if ENABLE_CA_AND_DISTORTION:
+            distorted = check_if_distortion_corrections_needed(distortionexif)
+            caed = check_if_ca_corrections_needed(ca_exif)
+        else:
+            distorted = False
+            caed = False
+
         print(ca_exif)
         if caed:
             print("Lens has LaCA correction in EXIF")
@@ -239,19 +244,20 @@ for arg in argv[1:]:
         os.symlink(entry.path, linked_raw_path)
 
         # Prepare to process raw
-        uncorrected_image_path = linked_raw_path + ".ppm"
+        uncorrected_image_path = linked_raw_path + ".tiff"
         try:
             os.remove(uncorrected_image_path)
             print("Removed exising demosaiced image")
         except FileNotFoundError:
             pass
         print("Calling Libraw dcraw_emu to demosaic...")
-        output = subprocess.check_output(["/home/sam/LibRaw-0.19.2/bin/dcraw_emu", "-4", "-a", linked_raw_path])
-
+        output = subprocess.check_output(["/home/sam/LibRaw-0.19.2/bin/dcraw_emu", "-4", "-a",
+                                          "-T", "-W", linked_raw_path])  #"-o", "0", "-M",
 
         print("Running CA and maybe distortion correction loops...")
         print()
         loops = [0]
+
         if caed:
             loops.append(1)
         if distorted:
@@ -267,13 +273,13 @@ for arg in argv[1:]:
                     red, green, blue, bother = distortioncalc(distortionexif, ca_exif)
                     print("Loop 3: CA and distortion correction")
 
-                corrected_image_path = os.path.join(WORKING_DIR, entry.name + ".corrected.ppm")
+                corrected_image_path = os.path.join(WORKING_DIR, entry.name + ".corrected.tiff")
 
-                channelpath = os.path.join(WORKING_DIR, entry.name+".channel_%d.pgm")
+                channelpath = os.path.join(WORKING_DIR, entry.name+".channel_%d.tiff")
 
-                redpath = os.path.join(WORKING_DIR, entry.name+".channel_0.pgm")
-                greenpath = os.path.join(WORKING_DIR, entry.name+".channel_1.pgm")
-                bluepath = os.path.join(WORKING_DIR, entry.name+".channel_2.pgm")
+                redpath = os.path.join(WORKING_DIR, entry.name+".channel_0.tiff")
+                greenpath = os.path.join(WORKING_DIR, entry.name+".channel_1.tiff")
+                bluepath = os.path.join(WORKING_DIR, entry.name+".channel_2.tiff")
 
                 print("Separating channels...")
                 output = subprocess.check_output(["convert", uncorrected_image_path, "-depth", "16",
@@ -308,7 +314,10 @@ for arg in argv[1:]:
 
             print("Running mtf_mapper for loop {}...".format(n+1))
             print("Analysing file '{}'...".format(image_to_analyse))
+
             output = subprocess.check_output(["mtf_mapper", "-a", "-q", "-l", "--nosmoothing", "-e", image_to_analyse, WORKING_DIR])
+
+            print("MTF Mapper output", output)
 
             temp_mtf_output_path = os.path.join(WORKING_DIR, "edge_sfr_values.txt")
             temp_esf_output_path = os.path.join(WORKING_DIR, "raw_esf_values.txt")
