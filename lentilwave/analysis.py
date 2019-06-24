@@ -1,8 +1,7 @@
 import prysm
 from lentil.constants_utils import *
-from lentil.wavefront_utils import decode_parameter_tuple, encode_parameter_tuple, plot_nominal_psf, convert_wavefront_dicts_to_p_dicts
-from lentil.wavefront_test import try_wavefront, get_z4, get_z9
-from lentil.wavefront_config import DEFAULT_SAMPLES, MODEL_WVLS
+from lentil.wavefront_utils import plot_nominal_psf
+from lentilwave.encode_decode import encode_parameter_tuple, decode_parameter_tuple, convert_wavefront_dicts_to_p_dicts
 
 
 def plot_wfe_data(focusset):

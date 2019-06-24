@@ -9,15 +9,16 @@ import prysm
 import numpy as np
 # import nlopt
 
-import lentil.wavefront_test
+import lentil.wavefront_test__old
 from lentil import wavefront_utils
 from lentil.constants_utils import *
-from lentil.wavefront_utils import TerminateOptException, decode_parameter_tuple, encode_parameter_tuple, get_loca_kernel
-from lentil.wavefront_test import try_wavefront, plot_pixel_vignetting_loss, get_processing_details, TestSettings, TestResults
-from lentil import wavefront_test
-from lentil.wavefront_config import SPACIAL_FREQS, MODEL_WVLS, OPTIMISE_PARAMS, PARAMS_OPTIONS, FIXED_PARAMS, COST_MULTIPLIER, SAVE_RESULTS, DISABLE_MULTIPROCESSING, MAXITER, USE_CHEAP_LOCA_MODEL, CHEAP_LOCA_NORMALISE_FOCUS_SHIFT
-from lentil import wavefront_config
+from lentil.wavefront_utils import TerminateOptException, get_loca_kernel
+from lentilwave.encode_decode import encode_parameter_tuple, decode_parameter_tuple
+from lentil.wavefront_config__old import SPACIAL_FREQS, MODEL_WVLS, OPTIMISE_PARAMS, PARAMS_OPTIONS, FIXED_PARAMS, COST_MULTIPLIER, SAVE_RESULTS, DISABLE_MULTIPROCESSING, MAXITER, USE_CHEAP_LOCA_MODEL, CHEAP_LOCA_NORMALISE_FOCUS_SHIFT
+from lentil import wavefront_config__old
 from lentil.focus_set import save_wafefront_data, scan_path, read_wavefront_file
+
+from lentilwave import generate, TestSettings
 
 keysignal = ""
 exit_signal = False
@@ -36,6 +37,7 @@ def testme(samples, loops=16*5, Q=2, *args, **kwargs):
         mtf = prysm.MTF.from_psf(allpsf)
         mtf.exact_sag(np.linspace(0, 10, 14))
         mtf.exact_tan(np.linspace(0, 10, 14))
+
 
 def testmul(samples, total_loops=16*5, Q=2):
 
@@ -101,20 +103,20 @@ def _save_data(ps, initial_ps, set, dataset, fun, nit, nfev, success, starttime,
                 if key in PARAMS_OPTIONS:
                     opt_per_focusset = PARAMS_OPTIONS[key][4]
                 elif key == 'fstop_corr':
-                    opt_per_focusset = wavefront_config.OPT_PER_FOCUSSET
+                    opt_per_focusset = wavefront_config__old.OPT_PER_FOCUSSET
                 else:
-                    opt_per_focusset = wavefront_config.OPT_SHARED
-                if opt_per_focusset == wavefront_config.OPT_PER_FOCUSSET:
+                    opt_per_focusset = wavefront_config__old.OPT_SHARED
+                if opt_per_focusset == wavefront_config__old.OPT_PER_FOCUSSET:
                     fstop = data.exif.aperture
                     dct["{}@{}".format(key, fstop)] = value
-                elif opt_per_focusset == wavefront_config.OPT_SHARED:
+                elif opt_per_focusset == wavefront_config__old.OPT_SHARED:
                     if p is ps[0]:
                         dct[key] = value
 
     # for p, pinit, focusset, data in zip(ps, initial_ps, set, dataset):
     outdict = {}
-    extra = {'zernike.numbering': wavefront_config.ZERNIKE_SCHEME,
-             'prysm.samples': wavefront_config.DEFAULT_SAMPLES,
+    extra = {'zernike.numbering': wavefront_config__old.ZERNIKE_SCHEME,
+             'prysm.samples': wavefront_config__old.DEFAULT_SAMPLES,
              'fstops': [_.exif.aperture for _ in set],
              'frequencies': ["{:.6f}".format(_) for _ in SPACIAL_FREQS],
              'wavelengths': list(MODEL_WVLS),
@@ -162,7 +164,7 @@ def _save_data(ps, initial_ps, set, dataset, fun, nit, nfev, success, starttime,
     else:
         wavefront_data = [("Optimised wavefront data", outdict)]
     try:
-        path = set[0].get_wavefront_data_path(seed=wavefront_config.RANDOM_SEED)
+        path = set[0].get_wavefront_data_path(seed=wavefront_config__old.RANDOM_SEED)
     except AttributeError:
         path = "wavefront_results/"
     # path = "/home/sam/"
@@ -195,7 +197,7 @@ def _calculate_cost(modelall, chartall, split, weightsall, count=1):
     complex_sq = (realdiffs**2 + imagdiffs**2)
     # meansquares = ((np.abs(modelall - chartall) * 1e3) ** 2 * weightsall).mean() * 1e-4
     meansquares = ((complex_sq + magdiffs ** 2) * weightsall).mean()
-    return meansquares * wavefront_config.COST_WEIGHT_MEAN_SQUARES, 0, meansquares * wavefront_config.COST_WEIGHT_MEAN_SQUARES,0
+    return meansquares * wavefront_config__old.COST_WEIGHT_MEAN_SQUARES, 0, meansquares * wavefront_config__old.COST_WEIGHT_MEAN_SQUARES, 0
     models = _split_array(modelall, split)
     charts = _split_array(chartall, split)
     line_trends = []
@@ -252,12 +254,12 @@ def _calculate_cost(modelall, chartall, split, weightsall, count=1):
 
     peak_mnsq = (((np.array(modelpeaks) - np.array(chartpeaks))*1e3)**2).mean() * 1e-6
 
-    final = (peak_mnsq * wavefront_config.COST_WEIGHT_PEAK_LOCATIONS +
-             linegradcost * wavefront_config.COST_WEIGHT_LINE_DIFF
-             + meansquares * wavefront_config.COST_WEIGHT_MEAN_SQUARES)
-    return (final, linegradcost * wavefront_config.COST_WEIGHT_LINE_DIFF,
-             meansquares * wavefront_config.COST_WEIGHT_MEAN_SQUARES,
-            peak_mnsq * wavefront_config.COST_WEIGHT_PEAK_LOCATIONS,)
+    final = (peak_mnsq * wavefront_config__old.COST_WEIGHT_PEAK_LOCATIONS +
+             linegradcost * wavefront_config__old.COST_WEIGHT_LINE_DIFF
+             + meansquares * wavefront_config__old.COST_WEIGHT_MEAN_SQUARES)
+    return (final, linegradcost * wavefront_config__old.COST_WEIGHT_LINE_DIFF,
+            meansquares * wavefront_config__old.COST_WEIGHT_MEAN_SQUARES,
+            peak_mnsq * wavefront_config__old.COST_WEIGHT_PEAK_LOCATIONS,)
 
 
 def _jiggle_zeds(x, passed_options_ordering):
@@ -309,7 +311,7 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
             for data in dataset:
                 try:
                     pass
-                    entry, number = scan_path(data.get_wavefront_data_path(wavefront_config.RANDOM_SEED))
+                    entry, number = scan_path(data.get_wavefront_data_path(wavefront_config__old.RANDOM_SEED))
                 except FileNotFoundError:
                     break
                 # entry, number = scan_path('wavefront_results/')
@@ -344,7 +346,7 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
     t_prep = 0
     t_calc = 0
     t_run = 0
-    cpu_gpu_fftsize_boundary = wavefront_config.CPU_GPU_ARRAYSIZE_BOUNDARY
+    cpu_gpu_fftsize_boundary = wavefront_config__old.CPU_GPU_ARRAYSIZE_BOUNDARY
     # extend_model = 15
     last_x = None
     lastcost = np.inf
@@ -377,7 +379,7 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
     ######################
     # Set up live plotting
 
-    if wavefront_config.LIVE_PLOTTING and plot_gradients_initial is None:
+    if wavefront_config__old.LIVE_PLOTTING and plot_gradients_initial is None:
         plt.show()
         fig, axesarray = plt.subplots(2, 2, sharey=False, sharex=True, gridspec_kw={'height_ratios': [3, 1]})
         subplots = [[{}, {}], [{}, {}]]
@@ -394,9 +396,9 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
                 axes.set_ylim(*limit)
                 axes.hlines(0, min(focus_values_concat), max(focus_values_concat))
                 plotdict['plot_process_fn'] = fn
-                for n, (freq, vals, alpha) in enumerate(zip(wavefront_utils.SPACIAL_FREQS[wavefront_config.PLOT_LINES],
-                                                                chart_vals[wavefront_config.PLOT_LINES],
-                                                                wavefront_config.PLOT_ALPHAS)):
+                for n, (freq, vals, alpha) in enumerate(zip(wavefront_utils.SPACIAL_FREQS[wavefront_config__old.PLOT_LINES],
+                                                            chart_vals[wavefront_config__old.PLOT_LINES],
+                                                            wavefront_config__old.PLOT_ALPHAS)):
                     color = NICECOLOURS[n % 4]
                     axes.plot(focus_values_concat, fn(vals), '--', label="Chart {:.2f}".format(freq), color=color, alpha=0.5)
                     line,  = axes.plot(focus_values_concat, fn(vals), '-', label="Model {:.2f}".format(freq), color=color, alpha=alpha)
@@ -431,12 +433,12 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
             signal.signal(signal.SIGINT, shutupshop)
             signal.signal(signal.SIGQUIT, shutupshop)
 
-        if wavefront_config.CPU_ONLY_PROCESSES is not None:
-            processes = wavefront_config.CPU_ONLY_PROCESSES
+        if wavefront_config__old.CPU_ONLY_PROCESSES is not None:
+            processes = wavefront_config__old.CPU_ONLY_PROCESSES
         # pool = multiprocessing.pool.ThreadPool
         pool = multiprocessing.Pool
-        cpupool = pool(processes=wavefront_config.CUDA_CPU_PROCESSES if wavefront_config.USE_CUDA else processes, initializer=init)
-        cudapool = pool(processes=wavefront_config.CUDA_PROCESSES, initializer=init)
+        cpupool = pool(processes=wavefront_config__old.CUDA_CPU_PROCESSES if wavefront_config__old.USE_CUDA else processes, initializer=init)
+        cudapool = pool(processes=wavefront_config__old.CUDA_PROCESSES, initializer=init)
 
 
     else:
@@ -446,7 +448,7 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
 
     last_params = None
 
-    def prysmfit(*params, plot=False, return_timing_only=False, no_process_details_cache=False):
+    def prysmfit(*params, plot=False, return_timing_only=False, overwrite_chart_data=False):
         """
         Provide inner loop for scipy optimise
 
@@ -467,7 +469,8 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
         nonlocal t_prep
         nonlocal t_run
         nonlocal t_calc
-
+        nonlocal  chart_sag_concat
+        nonlocal  chart_mer_concat
         # Check deltas
         orders = []
         names = []
@@ -547,7 +550,7 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
                 float_p = {k_: float(v_) for k_, v_ in p.items()}
                 index_add = 10000 if defocus == data.cauchy_peak_x else 0
 
-                s = TestSettings(defocus, float_p)
+                s = TestSettings(float_p, defocus=defocus)
                 s.mono = mono
                 s.plot = plottry
                 s.dummy = dummy
@@ -574,6 +577,7 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
 
         # f = wavefront_test._try_wavefront_prysmref
         f = wavefront_test.try_wavefront
+        f = generate
 
         if multi:
             cpures = cpupool.starmap_async(f, cpu_arg_lst)
@@ -643,6 +647,9 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
         cost_mer, _, _, _ = _calculate_cost(offset_model_mer_values, chart_mer_concat, split, weights_concat, count)
         cost = (cost_sag**2 + cost_mer**2) ** 0.5
         # cost = cost_mer
+        if overwrite_chart_data:
+            chart_sag_concat = offset_model_sag_values
+            chart_mer_concat = offset_model_mer_values
 
         # Check for parameters near bounds
         for arg, (low, high), order in zip(params[0], optimise_bounds, passed_options_ordering):
@@ -652,14 +659,14 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
                 ratio = 0.5
             if ratio < 0.03 or ratio > 0.97:
                 if iterations > prev_iterations or count % 50 == 51:
-                    scale = wavefront_config.PARAMS_OPTIONS[order[0]][5]
+                    scale = wavefront_config__old.PARAMS_OPTIONS[order[0]][5]
                     log.warning(
                         "{} ({}) if at {:.3f} very close to bounds {:.3f} {:.3f}".format(order[0],
                                                                                          order[1],
                                                                                          arg / scale,
                                                                                          low / scale,
                                                                                          high / scale))
-            if wavefront_config.ENFORCE_BOUNDS_IN_COST and np.abs(ratio - 0.5) * 2 > 1.01:
+            if wavefront_config__old.ENFORCE_BOUNDS_IN_COST and np.abs(ratio - 0.5) * 2 > 1.01:
                 bounds_cost = float("inf")
             else:
                 bounds_cost = 0
@@ -760,29 +767,15 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
                 print("  ".join(headerstrlst))
             print("  ".join(displaystrlst))
 
-        if plot or (wavefront_config.LIVE_PLOTTING and iterations > prev_iterations  or count % 2 == 0) and plot_gradients_initial is None:
-            # for nplot, (axes, plotdict) in enumerate(zip(axesarray, subplots)):
-            #         for n, (freq, model_sag, model_mer, line_sag, line_mer) in enumerate(zip(
-            #                                                     wavefront_utils.SPACIAL_FREQS[wavefront_config.PLOT_LINES],
-            #                                                     offset_model_sag_values[wavefront_config.PLOT_LINES],
-            #                                                     offset_model_mer_values[wavefront_config.PLOT_LINES],
-            #                                                     plotdict['linessag'], plotdict['linesmer'])):
-                        # color = COLOURS[n % 8]
-                        # axes.plot(focus_values, chart, '-', label="Chart", color=color )
-                        # plot_process_fn = plotdict['plot_process_fn']
-                        # line_sag.set_ydata(plot_process_fn(model_sag))
-                        # line_mer.set_ydata(plot_process_fn(model_mer))
-                    # plt.draw()
-                    # plt.pause(1e-6)
-
+        if plot or (wavefront_config__old.LIVE_PLOTTING and (iterations > prev_iterations or count % 2 == 0)) and plot_gradients_initial is None:
             for chartaxespair, plotdictpair in zip(chart_axes, subplots):
                 for chart_axis, plotdict in zip(chartaxespair, plotdictpair):
                     lines = plotdict['lines']
                     plot_process_fn = plotdict['plot_process_fn']
                     if chart_axis == SAGITTAL:
-                        modelvals = offset_model_sag_values[wavefront_config.PLOT_LINES]
+                        modelvals = offset_model_sag_values[wavefront_config__old.PLOT_LINES]
                     else:
-                        modelvals = offset_model_mer_values[wavefront_config.PLOT_LINES]
+                        modelvals = offset_model_mer_values[wavefront_config__old.PLOT_LINES]
                     for n, (line, vals) in enumerate(zip(lines, modelvals)):
                         line.set_ydata(plot_process_fn(vals))
             plt.draw()
@@ -791,27 +784,37 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
         it_count += 1
         prev_iterations = iterations
         lastcost = cost
-        return cost * wavefront_config.HIDDEN_COST_SCALE
+        return cost * wavefront_config__old.HIDDEN_COST_SCALE
 
     initial_guess, optimise_bounds, passed_options_ordering = encode_parameter_tuple(dataset)
     # exit()
     if plot_gradients_initial is not None and plot_gradients_initial is not False:
+        if plot_gradients_initial is True:
+            plot_gradients_initial = initial_guess
         baseline = np.array(plot_gradients_initial)# * wavefront_config.SCALE_EXTRA[:len(plot_gradients_initial)]
-        deltainc = 1e-8
-        numvals = 4
+
+        basecost = prysmfit(baseline, overwrite_chart_data=True)
+        deltainc = 1e-7
+        numvals = 5
         deltas = np.linspace(-deltainc * (numvals-1) / 2, deltainc * (numvals-1) / 2, numvals)
-        deltas = np.linspace(0, deltainc * (numvals-1) / 2, numvals)
+        # print("Deltas", deltas)
+        # deltas = np.linspace(-deltainc * (numvals-1) / 2,0,  numvals)
         # deltas = np.linspace(0, deltainc * (numvals), numvals)
+        # deltas = np.array([-2e-11, -1e-11, 0])
         costs_lst = []
         legends = []
         gradients = []
         jiggles = []
 
         test_axes = np.arange(0, len(plot_gradients_initial))
+        # test_axes = np.arange(52, len(plot_gradients_initial))
+        # test_axes = np.arange(0, 12)
 
         for axis in test_axes:
-            print("Testing {}".format(passed_options_ordering[axis][0]))
+            pname = passed_options_ordering[axis][0]
+            print("Testing {}".format(pname))
             costs = []
+            # param_array = deltas / wavefront_config.SCALE_EXTRA_[pname]**0.5 + baseline[axis]
             param_array = deltas + baseline[axis]
             for param in param_array:
                 params = baseline.copy()
@@ -823,27 +826,41 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
             poly = np.polyfit(deltas, costs, 2)
             polyvals = np.polyval(poly, deltas)
             mean_diff = np.diff(costs).mean()
-            polyfit_rmse = ((polyvals - costs)**2).mean() ** 0.5 / mean_diff
+            try:
+                polyfit_rmse = ((polyvals - costs)**2).mean() ** 0.5 / mean_diff
+            except FloatingPointError:
+                polyfit_rmse = 0.0
             # print(polyfit_rmse)
             # plt.plot(polyvals)
             # plt.plot(costs)
             # plt.show()
-            gradients.append(poly[1])
+            gradients.append(poly[0])
             jiggles.append(polyfit_rmse)
             legends.append("{}".format(passed_options_ordering[axis][0]))
-        gradients = np.array(gradients) / np.mean(np.abs(gradients))
+            print(poly)
+        gradients = np.array(gradients)# / np.mean(np.abs(gradients))
         print(repr(gradients))
         print(passed_options_ordering)
         for axis, grad, jiggle in zip(test_axes, gradients, jiggles):
             print("Axis {}, gradient {:.3f}, jiggles {:.2f}"
                   .format("{}".format(passed_options_ordering[axis][0]), grad, jiggle))
-
+        try:
+            dct = wavefront_utils.build_normalised_scale_dictionary(gradients, passed_options_ordering)
+        except FloatingPointError:
+            dct = {}
+        print(dct)
         plt.cla()
         for costs, legend in zip(costs_lst, legends):
-            plt.plot(deltas, costs, marker='v', label=legend)
+            meancost = np.mean(costs)
+            std = np.std(costs)
+            try:
+                normcosts = (costs - meancost) / std / 2
+            except FloatingPointError:
+                normcosts = np.ones(len(costs))
+            plt.plot(deltas, normcosts, marker='v', label=legend)
         plt.legend()
         plt.show()
-        return gradients, passed_options_ordering
+        return gradients, passed_options_ordering, dct
 
     print(passed_options_ordering)
     print("Initial guess", repr(np.array(initial_guess)))
@@ -865,7 +882,7 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
     # exit()
 
     # Profile and fine tune
-    if wavefront_config.USE_CUDA and wavefront_config.CPU_GPU_FFTSIZE_BOUNDARY_FINETUNE:
+    if wavefront_config__old.USE_CUDA and wavefront_config__old.CPU_GPU_FFTSIZE_BOUNDARY_FINETUNE:
         for _ in range(5):
             prysmfit(initial_guess, return_timing_only=True)
         # hithigh  = False
@@ -894,7 +911,7 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
         #         hithigh = True
 
         # tries = np.linspace(-120,120, 7) + wavefront_config.CPU_GPU_FFTSIZE_BOUNDARY
-        tries = CUDA_GOOD_FFT_SIZES[(CUDA_GOOD_FFT_SIZES < wavefront_config.FINETUNE_MAX) * (CUDA_GOOD_FFT_SIZES >= wavefront_config.FINETUNE_MIN)]
+        tries = CUDA_GOOD_FFT_SIZES[(CUDA_GOOD_FFT_SIZES < wavefront_config__old.FINETUNE_MAX) * (CUDA_GOOD_FFT_SIZES >= wavefront_config__old.FINETUNE_MIN)]
         # tries = tries[tries >= 0]
 
         times = []
@@ -902,10 +919,10 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
             cpuwaits = []
             evals = []
             print("Trying fftsize boundary {}".format(cpu_gpu_fftsize_boundary))
-            prysmfit(initial_guess, return_timing_only=True, no_process_details_cache=True)
-            prysmfit(initial_guess, return_timing_only=True, no_process_details_cache=True)
+            prysmfit(initial_guess, return_timing_only=True)
+            prysmfit(initial_guess, return_timing_only=True)
             for _ in range(1):
-                eval, wait = prysmfit(initial_guess, return_timing_only=True, no_process_details_cache=True)
+                eval, wait = prysmfit(initial_guess, return_timing_only=True)
                 cpuwaits.append(wait)
                 evals.append(eval)
             times.append(np.mean(evals))
@@ -1090,7 +1107,7 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
                                         options=options, callback=callback)
                 # opt = optimize.minimize(prysmfit, initial_guess, method="trust-constr", bounds=optimise_bounds,
                 #                         options=dict(), callback=callback)
-                fun = opt.fun / wavefront_config.HIDDEN_COST_SCALE
+                fun = opt.fun / wavefront_config__old.HIDDEN_COST_SCALE
                 x = opt.x
                 try:
                     nit = opt.nit

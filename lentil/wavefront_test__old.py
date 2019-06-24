@@ -19,6 +19,9 @@ zcache = prysm.zernike.zcache.regular
 cupyzcache = {}
 numpyzcache_arrays = {}
 cupyzcache_arrays = {}
+cache_idx = {}
+cache_idx["cp"] = None
+cache_idx["np"] = None
 window_cache = {}
 
 all_but_z4_and_z9_phasecache = dict(np={}, cp={})
@@ -33,7 +36,26 @@ settings_cache = {}
 
 mask_cache = deque(maxlen=conf.MASK_CACHE_SIZE)
 
+deltas = np.linspace(-1,1, 19) * 1e-12
+a = np.random.random((256, 256))
+psf_size = 256
+mses = []
+for d in deltas:
+    normshift_x = d
+    normshift_y = 0
+    zoom_factor = 1.0000
+    transform = np.array(((1.0 / zoom_factor, 0), (0, 1.0 / zoom_factor)))
+    offset_x = (psf_size - 1 + 1) / 2 * (1.0 - 1.0 / zoom_factor - normshift_x)
+    offset_y = (psf_size - 1 + 1) / 2 * (1.0 - 1.0 / zoom_factor - normshift_y)
+    order = conf.PSF_SPLINE_ORDER
+    zoomed_mono_psf = ndimage.affine_transform(a, transform, (offset_y, offset_x),
+                                       order=order)
+    mses.append(((zoomed_mono_psf - a)**2).sum())
+    print(d, mses[-1])
 
+# plt.plot(deltas, mses)
+# plt.show()
+# exit()
 class TestSettings:
     def __init__(self, defocus, p):
         self.defocus = defocus
@@ -174,6 +196,27 @@ mtf_cache = None
 return_cache = None
 
 
+def get_used_zernikes(iterable, cache=True, me=np):
+    max = 0
+    arr = me.zeros(48, dtype="int")
+    idx = me.zeros(48, dtype="int") - 1
+    used = []
+    count = 0
+    for item in iterable:
+        if item[0].lower() == "z" and item[1].isdigit():
+            print(item)
+            zn = int(item[1:])
+            arr[zn - 1] = 1
+            if (zn) > max:
+                max = zn
+            idx[zn - 1] = count
+            count += 1
+            used.append(zn)
+    arr[3] = 1
+    print(arr, max, idx, 99)
+    return arr, max, idx, used
+
+
 def get_processing_details(s: TestSettings):
     if s.id_or_hash is not None and s.id_or_hash in settings_cache:
         stup = settings_cache[s.id_or_hash]
@@ -303,6 +346,8 @@ def try_wavefront(s: TestSettings):
 
     tr = TestResults()
     tr.copy_important_settings(s)
+    if s.id_or_hash == 1:
+        print("step", s.p['df_step'])
 
     if s.dummy:
         return tr
@@ -349,7 +394,7 @@ def try_wavefront(s: TestSettings):
     realdtype = "float32" if conf.PRECISION == 32 else "float64"
     complexdtype = "complex64" if conf.PRECISION == 32 else "complex128"
 
-    me, mestr = (cp, 'np') if use_cuda else (np, 'np')
+    me, engine_string = (cp, 'np') if use_cuda else (np, 'np')
 
     eval_wavelengths = [BASE_WAVELENGTH] if s.mono else MODEL_WVLS
     # eval_wavelengths = [BASE_WAVELENGTH] if s.mono else [0.5, 0.9]
@@ -391,6 +436,14 @@ def try_wavefront(s: TestSettings):
 
     t_maskmaking = time.time() - t
 
+    used_zernikes_flags, max_zernike, cache_idx_, used_zernikes = get_used_zernikes(s.p.keys())
+
+    if cache_idx[engine_string] is not None:
+        if not me.all(cache_idx[engine_string] == cache_idx_):
+            raise Exception("Zernicke cache does not match P dict")
+    else:
+        cache_idx[engine_string] = cache_idx_
+
     zkwargs = {}
     for key, value in s.p.items():
 
@@ -404,22 +457,33 @@ def try_wavefront(s: TestSettings):
             #     continue
             zkwargs[key] = value * mul * conf.BASE_WAVELENGTH
 
-    z_arr_no_z4_z9 = np.zeros(conf.NUM_ZERNIKES, dtype=realdtype)
+    z_arr_no_z4_z9 = np.zeros(used_zernikes_flags.sum(), dtype=realdtype)
     for key, value in zkwargs.items():
-        idx = int(key[1:]) - 1
+        idx = cache_idx['np'][int(key[1:]) - 1]
         z_arr_no_z4_z9[idx] = value
-    z_arr_no_z4_z9[3] = 0
-    z_arr_no_z4_z9[8] = 0
+    z_arr_no_z4_z9[cache_idx[engine_string][3]] = 0
+    z_arr_no_z4_z9[cache_idx[engine_string][8]] = 0
+    print(zkwargs)
+    print(zkwargs)
+    print(zkwargs)
+    print(zkwargs)
+    print(z_arr_no_z4_z9)
+    print(z_arr_no_z4_z9)
+    print(z_arr_no_z4_z9)
+    print(z_arr_no_z4_z9)
+    print(z_arr_no_z4_z9)
+    print(z_arr_no_z4_z9)
+    print(z_arr_no_z4_z9)
     zhash = hash(tuple(z_arr_no_z4_z9))
 
     if me is not np:
         z_arr_no_z4_z9 = me.array(z_arr_no_z4_z9, dtype=realdtype)
 
     if me is cp:
-        cache = cupyzcache
+        # cache = cupyzcache
         cache_array = cupyzcache_arrays
     else:
-        cache = zcache
+        # cache = zcache
         cache_array = numpyzcache_arrays
 
     for wvl_num, (model_wvl, polych_weight) in enumerate(zip(eval_wavelengths, polychromatic_weights)):
@@ -434,24 +498,28 @@ def try_wavefront(s: TestSettings):
         if s.phasesamples not in cache_array:
             t = time.time()
             if s.phasesamples not in zcache:
-                pupil = prysm.FringeZernike(np.ones(conf.NUM_ZERNIKES) * 0.5,
+                pupil = prysm.FringeZernike(used_zernikes_flags,
                                             dia=10, norm=False,
                                             wavelength=model_wvl,
                                             opd_unit="um",
                                             mask_target='none',
-                                            samples=s.phasesamples, )
+                                            samples=s.phasesamples, )  # This is just here to fill the coeff cache
             t_pupils += time.time() - t
             t = time.time()
 
-            if me is cp:
-                cache[s.phasesamples] = {}
-            cache_array[s.phasesamples] = me.empty((s.phasesamples, s.phasesamples, conf.NUM_ZERNIKES), dtype=realdtype)
+            # if me is cp:
+            #     cache[s.phasesamples] = {}
+            cache_array[s.phasesamples] = me.empty((s.phasesamples, s.phasesamples, used_zernikes_flags.sum()), dtype=realdtype)
             # cache_array[s.phasesamples] = 1
 
-            for key, val in zcache[s.phasesamples].items():
-                if me is cp:
-                    cache[s.phasesamples][key] = me.array(val)
-                cache_array[s.phasesamples][:, :, key] = me.array(val, dtype=realdtype)
+            # for key, val in cache[s.phasesamples].items():
+            if 1:
+                idx = cache_idx['np'][key]
+                # if me is cp:
+                #     cache[s.phasesamples][key] = me.array(val)
+                cache_array[s.phasesamples][:, :, idx] = me.array(val, dtype=realdtype)
+
+                cache_idx[key] = idx
             print("graaagl")
 
             sync()
@@ -464,21 +532,18 @@ def try_wavefront(s: TestSettings):
         t_pupils += time.time() - t
         t = time.time()
 
-        if s.phasesamples not in all_but_z4_and_z9_phasecache[mestr] or \
-            all_but_z4_and_z9_phasecache[mestr][s.phasesamples][0] != zhash:
-            # all_but_z4_and_z9_phasecache = me.zeros(s.phaseshape, dtype=realdtype)
-            # for (key, val) in cache[s.phasesamples].items():
-            #     all_but_z4_and_z9_phasecache += val * float(z_arr_no_z4_z9[key])
-            all_but_z4_and_z9_phasecache[mestr][s.phasesamples] = zhash, cache_array[s.phasesamples] @ z_arr_no_z4_z9
+        if s.phasesamples not in all_but_z4_and_z9_phasecache[engine_string] or \
+                all_but_z4_and_z9_phasecache[engine_string][s.phasesamples][0] != zhash:
+            all_but_z4_and_z9_phasecache[engine_string][s.phasesamples] = zhash, cache_array[s.phasesamples] @ z_arr_no_z4_z9
 
         if me is cp:
             phase = cache_array[s.phasesamples][:, :, 3] * z4
-            phase += all_but_z4_and_z9_phasecache[mestr][s.phasesamples][1]
+            phase += all_but_z4_and_z9_phasecache[engine_string][s.phasesamples][1]
             phase += cache_array[s.phasesamples][:, :, 8] * z9
         else:
             # print(cache)
             phase = cache[s.phasesamples][3] * z4
-            phase += all_but_z4_and_z9_phasecache[mestr][s.phasesamples][1]
+            phase += all_but_z4_and_z9_phasecache[engine_string][s.phasesamples][1]
             phase += cache[s.phasesamples][8] * z9
         phase /= model_wvl
         sync()
@@ -572,7 +637,7 @@ def try_wavefront(s: TestSettings):
 
         psf_size = impulse_response.shape[0]
 
-        zoom_factor = model_wvl / min(eval_wavelengths)
+        zoom_factor = float(np.clip(model_wvl / min(eval_wavelengths), 1.00001, np.inf))
         normshift_x, normshift_y = get_lca_shifts(s, model_wvl, psf_sample_spacing)
 
         if s.return_psf or USE_PSF:
@@ -641,8 +706,8 @@ def try_wavefront(s: TestSettings):
                 psf_sag += zoomx / zoomx.sum() * polych_weight
                 psf_tan += zoomy / zoomy.sum() * polych_weight
             else:
-                psf_sag += zoomx * polych_weight * mul**1
-                psf_tan += zoomy * polych_weight * mul**1
+                psf_sag += zoomx * polych_weight * mul
+                psf_tan += zoomy * polych_weight * mul
             sync()
             t_affines += time.time() - t
 
@@ -660,6 +725,9 @@ def try_wavefront(s: TestSettings):
     if USE_PSF:
         psf_sag = mono_psf_stack.sum(axis=1)
         psf_tan = mono_psf_stack.sum(axis=0)
+        if me is cp:
+            psf_sag = cp.asnumpy(psf_sag)
+            psf_tan = cp.asnumpy(psf_tan)
         # plt.plot(psf_sag / psf_sag.mean())
         # plt.plot(psf_sag_ / psf_sag_.mean())
         # plt.plot(((psf_sag / psf_sag.mean()) / (psf_sag_ / psf_sag_.mean()))[192:256+64])
@@ -747,14 +815,11 @@ def try_wavefront(s: TestSettings):
 
     # tukey_window = get_window(s.fftsize, psf_sample_spacing)
     # print("{:.3f} {:.3f}".format(np.sum(psf_sag * psf_units) / psf_sag.sum(), np.sum(psf_tan * psf_units) / psf_tan.sum()))
-
     sag_mod = normalised_centreing_fft(psf_sag * tukey_window, fftpack=scipyfftpack, engine=np)[:centre]
     tan_mod = normalised_centreing_fft(psf_tan * tukey_window, fftpack=scipyfftpack, engine=np)[:centre]
 
     # sag_mod = abs(fftpack.fft(np.fft.fftshift(psf_sag))[:centre])
     # tan_mod = abs(fftpack.fft(np.fft.fftshift(psf_tan))[:centre])
-
-
     # try:
     #     sag_mod /= sag_mod[0]
     # except FloatingPointError:
@@ -1160,11 +1225,9 @@ def mask_pupil(s: TestSettings, engine=np, dtype="float64", plot=False):
 
     smoothfactor = s.phasesamples / 1.5
 
-    # print("Building mask", os.getpid(), hashtuple)
     me = engine
 
     aperture_stop_norm_radius = s.p['base_fstop'] / s.p['fstop']
-
 
     na = 1 / (2.0 * s.p['base_fstop'])
     onaxis_peripheral_ray_angle = me.arcsin(na, dtype=dtype)
@@ -1206,15 +1269,10 @@ def mask_pupil(s: TestSettings, engine=np, dtype="float64", plot=False):
     if not s.pixel_vignetting:
         mask = stopmask
     else:
-
         coeff_4 = -18.73 * a
         corff_6 = 485 * b
-
         square_grid = 1.0 / (1.0 + (pixel_angle_grid**4 * coeff_4 + pixel_angle_grid ** 6 * corff_6))
-
         mask = stopmask * square_grid
-
-        # mask = stopmask
 
     if s.lens_vignetting:
         # Lens vignette
@@ -1237,10 +1295,6 @@ def mask_pupil(s: TestSettings, engine=np, dtype="float64", plot=False):
         vignette_mask = vignette_radius_grid < vignette_crop_circle_radius
         vignette_mask = np.clip((vignette_crop_circle_radius - vignette_radius_grid) * smoothfactor + 0.5, 0, 1)
         mask *= vignette_mask
-
-    # plt.plot(mask[int(shape[0] / 2), :])
-    # plt.show()
-    # 0870 0106077
 
     if plot or s.id_or_hash == -1:
         if engine is cp:
@@ -1361,7 +1415,8 @@ def plot_lens_vignetting_loss(base_fstop=1.4):
 # psf = tr.psf
 # psf.plot2d(axlim=30)
 # plt.show()
-# exit()
+# exit()y
+
 
 
 pool = multiprocessing.Pool(processes=8)
