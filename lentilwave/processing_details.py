@@ -3,14 +3,13 @@ from scipy import interpolate, fftpack, optimize
 
 from lentil import constants_utils as lentilconf
 
-from lentilwave.helpers import TestSettings
 from lentilwave import config
-from lentilwave.generate import caches
+from lentilwave.generation import caches
 
 
-def get_processing_details(s: TestSettings, cache: caches.GenerateCache = None):
-    if s.id_or_hash is not None and s.id_or_hash in cache.detailscache:
-        stup = cache.detailscache[s.id_or_hash]
+def get_processing_details(s, cache_: caches.GeneratorCache = None):
+    if cache_ is not None and s.id_or_hash is not None and s.id_or_hash in cache_.settings:
+        stup = cache_.settings[s.id_or_hash]
         if s.fftsize is None:
             s.fftsize = stup[0]
         if s.phasesamples is None:
@@ -99,8 +98,8 @@ def get_processing_details(s: TestSettings, cache: caches.GenerateCache = None):
 
     s.effective_q = effective_q
 
-    if s.id_or_hash is not None:
-        cache[s.id_or_hash] = fftsize, samples, effective_q
+    if cache_ is not None and s.id_or_hash is not None:
+        cache_.settings[s.id_or_hash] = fftsize, samples, effective_q
 
     # s.fftsize = 1024
     # s.phasesamples = 512

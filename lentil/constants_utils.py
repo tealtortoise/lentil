@@ -6,6 +6,7 @@ import numpy as np
 from scipy import fftpack as scipyfftpack
 from scipy import interpolate, optimize
 import  matplotlib.pyplot as plt
+import matplotlib
 
 log = logging.getLogger(__name__)
 np.seterr(all='raise')
@@ -845,8 +846,8 @@ def normalised_centreing_fft(y, x=None, return_type=COMPLEX_CARTESIAN, engine=np
 
     if fftpack is None:
         fftpack = scipyfftpack
-    yzers = (y == 0).sum() == len(y)
-    if yzers:
+    yzero = (y == 0).sum() == len(y)
+    if yzero:
         return convert_complex((np.zeros_like(x), np.zeros_like(x)), type=return_type)
 
     if y.sum() == 0:
@@ -957,3 +958,15 @@ def __test_normalisation2():
 
     # _test_phase_normalisation()
     exit()
+
+
+def plot_pause_replacement(interval):
+    backend = plt.rcParams['backend']
+    if backend in matplotlib.rcsetup.interactive_bk:
+        figManager = matplotlib._pylab_helpers.Gcf.get_active()
+        if figManager is not None:
+            canvas = figManager.canvas
+            if canvas.figure.stale:
+                canvas.draw()
+            canvas.start_event_loop(interval)
+            return

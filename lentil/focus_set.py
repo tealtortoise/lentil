@@ -949,11 +949,11 @@ class FocusSet:
             ax.set_xlabel("Spacial Frequency (cy/px")
             ax.set_ylabel("Focus position")
             ax.set_zlabel("SFR (dB - log scale)")
-            ax.set_zlim(-3, 0)
+            ax.set_zlim(-30, 0)
         else:
             ax.set_xlabel("Focus Position")
             ax.set_ylabel("SFR (dB (log scale))")
-            ax.set_ylim(-3,0)
+            ax.set_ylim(-30,0)
             ax.legend()
 
         ax.set_title("SFR vs Frequency for {}".format(self.exif.summary))

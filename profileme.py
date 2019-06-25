@@ -5,9 +5,9 @@ import prysm as prysmc
 import numpy as np
 import pstats
 from lentil.constants_utils import *
-from lentil.wavefront_test import try_wavefront
-from lentil.wavefront_config import SPACIAL_FREQS
-from lentil import wavefront_config
+from lentil.wavefront_test__old import try_wavefront
+from lentil.wavefront_config__old import SPACIAL_FREQS
+from lentil import wavefront_config__old
 
 BASE_PATH = "/home/sam/nashome/MTFMapper Stuff/"
 

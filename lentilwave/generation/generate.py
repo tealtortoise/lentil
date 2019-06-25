@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 
 from lentil import constants_utils as lentilconf
 from lentilwave import config, helpers
-from lentilwave.generate import masks, caches
+from lentilwave.generation import masks, caches
 
 
 def sanitycheck(s):
@@ -22,8 +22,8 @@ def sanitycheck(s):
         raise ValueError("Base_fstop must be wider (lower) than fstop {} < {}".format(s.p['fstop'], s.p['base_fstop']))
 
 
-defaultcaches = {'np': caches.GenerateCache(),
-                 'cp': caches.GenerateCache()}
+defaultcaches = {'np': caches.GeneratorCache(),
+                 'cp': caches.GeneratorCache()}
 
 
 def get_phase_cache_cube(s: helpers.TestSettings, me=np, realdtype="float64"):
@@ -50,11 +50,26 @@ def get_phase_cache_cube(s: helpers.TestSettings, me=np, realdtype="float64"):
 
 def generate(s: helpers.TestSettings, cache_=defaultcaches):
     t = time.time()
-
+    # return None
     tr = helpers.TestResults()
     tr.copy_important_settings(s)
 
     if s.dummy:
+        timings = dict(t_init=0,
+                       t_maskmaking=0,
+                       t_pupils=0,
+                       t_get_phases=0,
+                       t_get_fcns=0,
+                       t_fcntransforms=0,
+                       t_pads=0,
+                       t_ffts=0,
+                       t_cudasyncs=0,
+                       t_affines=0,
+                       t_mtfs=0,
+                       t_misc=0)
+
+        tr.otf = np.zeros(len(config.SPACIAL_FREQS),dtype="complex128"), np.zeros(len(config.SPACIAL_FREQS),dtype="complex128")
+        tr.timings = timings
         return tr
 
     sanitycheck(s)

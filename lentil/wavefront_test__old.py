@@ -10,8 +10,8 @@ import prysm
 from scipy import interpolate, ndimage, fftpack, optimize, signal
 import matplotlib.pyplot as plt
 
-from lentil import wavefront_config as conf
-from lentil.wavefront_config import SPACIAL_FREQS, BASE_WAVELENGTH, MODEL_WVLS, DEFAULT_SAMPLES
+from lentil import wavefront_config__old as conf
+from lentil.wavefront_config__old import SPACIAL_FREQS, BASE_WAVELENGTH, MODEL_WVLS, DEFAULT_SAMPLES
 from lentil.constants_utils import *
 
 

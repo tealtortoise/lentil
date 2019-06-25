@@ -1,220 +1,18 @@
 import random
 import multiprocessing
-import prysm
 import lentil.constants_utils
 from lentil.constants_utils import *
-from lentil import wavefront_config
 from lentil.focus_set import FocusSet, read_wavefront_data
 # from lentil.focus_set import estimate_focus_jitter
-from lentil.wavefront_config import SPACIAL_FREQS, MODEL_WVLS, EXTREME_FOCUS_WEIGHT, HIGH_FREQUENCY_WEIGHT, CHEAP_LOCA_CUTOFF, USE_EXISTING_PARAMETER_IF_FIXED
 
 # use_cuda = wavefront_config.USE_CUDA
-from lentil.wavefront_test import try_wavefront
-from lentil import wavefront_test
+from lentilwave.encode_decode import convert_wavefront_dicts_to_p_dicts
+from lentilwave import config, TestSettings, TestResults
+from lentilwave.generation import generate
 
 
 class TerminateOptException(Exception):
     pass
-
-
-def convert_wavefront_dicts_to_p_dicts(wfdd):
-    ps = []
-    print(wfdd)
-    try:
-        nomfstops = wfdd['fstops']
-    except KeyError:
-        return []
-    min_fstop = np.inf
-    for stop in nomfstops:
-        p = {}
-        for key, value in wfdd.items():
-            split = key.split(":")
-            if split[0] == "p.opt":
-                if "@" in split[1]:
-                    param, nomf = split[1].split("@")
-                    if nomf == str(stop):
-                        p[param] = value
-                else:
-                    p[split[1]] = value
-
-        if p['fstop'] < min_fstop:
-            min_fstop = p['fstop']
-        ps.append(p)
-    for p in ps:
-        p['base_fstop'] = min_fstop
-    return ps
-
-
-def encode_parameter_tuple(dataset, use_initial=False, use_existing=True,
-                           params=(wavefront_config.OPTIMISE_PARAMS, wavefront_config.FIXED_PARAMS)):
-    passed_options_ordering = []
-    initial_guess = []
-    optimise_bounds = []
-
-    prepend = "p.initial:" if use_initial else "p.opt:"
-
-    if use_existing:
-        try:
-            existing_dict = dataset[0].wavefront_data[-1][1]
-        except (AttributeError, IndexError):
-            existing_dict = {}
-    else:
-        existing_dict = {}
-
-    if 'fstop' in params[0]:
-        fstop_first_params = []
-        fstop_first_params.append('fstop')
-        for param in params[0]:
-            if param != 'fstop':
-                fstop_first_params.append(param)
-    else:
-        fstop_first_params = params[0]
-    fstops = [data.exif.aperture for data in dataset]
-    base_fstop = min(fstops)
-
-    for pnum, pname in enumerate(fstop_first_params):
-        paramconfigtup = wavefront_config.PARAMS_OPTIONS[pname]
-        config_low , config_initial, config_high, f_lambda, optim_per_focusset, scale = paramconfigtup
-        scale *= wavefront_config.SCALE_EXTRA.get(pname, 1.0)
-
-        if optim_per_focusset == wavefront_config.OPT_PER_FOCUSSET:
-            loops = len(dataset)
-        else:
-            loops = 1
-            passed_options_ordering.append((pname, tuple(range(len(dataset)), ), None))
-
-        for a in range(loops):
-            if optim_per_focusset == wavefront_config.OPT_PER_FOCUSSET:
-                passed_options_ordering.append((pname, (a,), None))
-                existingkey = prepend + pname + "@{}".format(dataset[a].exif.aperture)
-                try:
-                    hint_dict = dataset[a].hints
-                except (AttributeError, IndexError):
-                    hint_dict = {}
-            else:
-                existingkey = prepend + pname
-                hint_dict = {}
-
-            fmul = f_lambda(fstops[a], base_fstop)
-
-            if pname == "df_offset":
-                if existingkey in existing_dict:
-                    initial = existing_dict[existingkey] / fmul
-                    low = initial - 6
-                    high = initial + 6
-                elif pname in hint_dict:
-                    initial = hint_dict[pname] / fmul
-                    low = initial - 30
-                    high = initial + 30
-                else:
-                    low = min(dataset[a].focus_values) - 2
-                    high = max(dataset[a].focus_values) + 2
-                    initial = (low + high) * 0.5
-
-            elif pname == 'df_step':
-                    if existingkey in existing_dict:
-                        initial = existing_dict[existingkey] / fmul
-                    elif pname in hint_dict:
-                        r = dataset[a].exif.aperture / base_fstop
-                        initial = hint_dict[pname] * base_fstop * r
-                    else:
-                        initial = config_initial / fmul
-                    low = initial / wavefront_config.DF_STEP_TOLERANCE
-                    high = initial * wavefront_config.DF_STEP_TOLERANCE
-
-            elif pname == 'fstop':
-                if existingkey in existing_dict:
-                    existfstop = existing_dict[existingkey]
-                    initial = existfstop / fmul
-                    if optim_per_focusset == wavefront_config.OPT_SHARED:
-                        corr = existfstop / fstops[a]
-                        for ix in range(len(fstops)):
-                            fstops[ix] *= corr
-                    else:
-                        fstops[a] = existfstop
-                    if a == 0:
-                        base_fstop = existfstop
-                else:
-                    initial = dataset[a].exif.aperture / fmul
-                low = config_low
-                high = config_high
-
-            else:
-                if existingkey in existing_dict:
-                    initial = existing_dict[existingkey] / fmul
-                elif pname in hint_dict:
-                    initial = hint_dict[pname] / fmul
-                else:
-                    initial = config_initial / fmul
-                low = min(config_low, initial)
-                high = max(config_high, initial)
-            initial_guess.append(initial * scale)
-            optimise_bounds.append((low * scale, high * scale))
-
-    return initial_guess, optimise_bounds, passed_options_ordering
-
-
-def decode_parameter_tuple(tup, passed_options_ordering, dataset, use_existing_fixed=USE_EXISTING_PARAMETER_IF_FIXED,
-                           params=(wavefront_config.OPTIMISE_PARAMS, wavefront_config.FIXED_PARAMS)):
-    # print(use_existing_fixed, USE_EXISTING_PARAMETER_IF_FIXED)
-    # exit()
-    ps = []
-    for _ in dataset:
-        ps.append({})
-    popt = {}
-    opt_fstops = [data.exif.aperture for data in dataset]
-    nominal_fstops = opt_fstops.copy()
-    if 'fstop' in wavefront_config.OPTIMISE_PARAMS:
-        # Avoid large gradients due to large pupil change with fstop
-        for tix, ((name, setapplies, fieldapplies), val) in enumerate(zip(passed_options_ordering, tup)):
-            config_low , config_initial, config_high, f_lambda, optim_per_focusset, scale = wavefront_config.PARAMS_OPTIONS[name]
-            scale *= wavefront_config.SCALE_EXTRA.get(name, 1.0)
-            if name == 'fstop':
-                for a in setapplies:
-                    opt_fstops[a] = val / scale * dataset[a].exif.aperture
-
-    base_fstop = min(opt_fstops)
-
-    for tix, ((name, setapplies, fieldapplies), val) in enumerate(zip(passed_options_ordering, tup)):
-        config_low , config_initial, config_high, f_lambda, optim_per_focusset, scale = wavefront_config.PARAMS_OPTIONS[name]
-        scale *= wavefront_config.SCALE_EXTRA.get(name, 1.0)
-        for a in setapplies:
-            if name == "fstop":
-                fmul = f_lambda(nominal_fstops[a], base_fstop)
-            else:
-                fmul = f_lambda(opt_fstops[a], base_fstop)
-            if fieldapplies is None:
-                ps[a][name] = val * fmul / scale
-                if len(setapplies) == 1:
-                    popt["{}{}".format(name, a)] = val * fmul / scale
-            else:
-                ps[a]["{}.{}".format(name, fieldapplies)] = val * fmul / scale
-                popt["{}{}.{}".format(name, a, fieldapplies)] = val * fmul / scale
-        if len(setapplies) > 1:
-            if name == "fstop":
-                popt["FSTOP_CORR"] = val / scale
-                for p in ps:
-                    p['fstop_corr'] = val / scale
-            else:
-                popt["{}".format(name)] = val * fmul / scale
-
-    pfix = {}
-    for name in params[1]:
-        config_low , config_initial, config_high, f_lambda, optim_per_focusset, scale = wavefront_config.PARAMS_OPTIONS[name]
-        for a, data in enumerate(dataset):
-            existing_dict = data.wavefront_data[-1][1]
-            existingkey = "p.opt:" + name
-
-            if use_existing_fixed and existingkey in existing_dict and optim_per_focusset is not wavefront_config.LOCK:
-                value = existing_dict[existingkey]
-                ps[a][name] = value
-                pfix["{}.{}".format(name, a)] = value
-            else:
-                fmul = f_lambda(opt_fstops[a], base_fstop)
-                # print(ps[a], name, config_initial, fmul)
-                ps[a][name] = config_initial * fmul
-                pfix["{}.{}".format(name, a)] = config_initial * fmul
-    return ps, popt, pfix
 
 
 def cauchy_fit(x, y):
@@ -253,12 +51,9 @@ def cauchy_fit(x, y):
 def get_weights(shape, focus_values, centre):
     focus_deviations = np.abs(focus_values - centre)
     max_focus_deviation = focus_deviations.max()
-    focusweights = 1.0 - focus_deviations / max_focus_deviation * (1.0 - EXTREME_FOCUS_WEIGHT)
+    focusweights = 1.0 - focus_deviations / max_focus_deviation * (1.0 - config.EXTREME_FOCUS_WEIGHT)
 
-    # focusrange = (1.0 - EXTREME_FOCUS_WEIGHT) ** 0.5
-    # focusweights = 1.0 - np.linspace(-focusrange, focusrange, shape[1]) ** 2
-
-    freqrange = HIGH_FREQUENCY_WEIGHT
+    freqrange = config.HIGH_FREQUENCY_WEIGHT
     freqweights = np.linspace(1.0, freqrange, shape[0]).reshape((shape[0], 1))
     expanded = np.repeat(focusweights[np.newaxis, :], shape[0], axis=0)
     weights = expanded * freqweights
@@ -368,7 +163,7 @@ def _process_focusset(num):
     else:
         x_test_loc = ob_.x_loc
         y_test_loc = ob_.y_loc
-    for freq in SPACIAL_FREQS:
+    for freq in config.SPACIAL_FREQS:
         print(freq)
         sag_ob = focusset.get_interpolation_fn_at_point(x_test_loc, y_test_loc, freq, sagaxis, limit=limit, skip=skip_)
         mer_ob = focusset.get_interpolation_fn_at_point(x_test_loc, y_test_loc, freq, meraxis, limit=limit, skip=skip_)
@@ -385,7 +180,7 @@ def _process_focusset(num):
     focus_values = sag_ob.focus_data
     max_pos = focus_values[np.argmax(mtf_means)]
 
-    diff_mtf = diffraction_mtf(SPACIAL_FREQS, focusset.exif.aperture)
+    diff_mtf = diffraction_mtf(config.SPACIAL_FREQS, focusset.exif.aperture)
     diff_mtf_mean = diff_mtf.mean()
     strehl_ests = mtf_means / diff_mtf_mean
 
@@ -448,7 +243,7 @@ def pre_process_focussets(focussets, fs_slices, skip, avoid_ends=1, from_scratch
             all_ps = None
 
 
-    if not wavefront_config.DISABLE_MULTIPROCESSING:
+    if not config.DISABLE_MULTIPROCESSING:
         pool = multiprocessing.Pool(initializer=init)
         datas = pool.map(_process_focusset, range(len(focussets)))
     else:
@@ -476,238 +271,6 @@ def pre_process_focussets(focussets, fs_slices, skip, avoid_ends=1, from_scratch
     return datas, focussets
 
 
-def build_synthetic_dataset(subsets=1, test_stopdown=0, base_aperture=1.4, stop_inc=1, slices_per_fstop=10, seed=None):
-    if seed is not None:
-        random.seed(seed)
-        np.random.seed(seed)
-    cauchy_fit_x = float("NaN")
-    z_ranges = lambda z: 1.0 - z / 20
-    focus_motor_error = 0.08
-    defocus_step = 0.55 / base_aperture
-    defocus_offset = slices_per_fstop / 2
-    valid = False
-    with multiprocessing.Pool(processes=wavefront_config.CUDA_PROCESSES) as pool:
-        valids = [1.0]
-        zfix = 1
-        while sum(valids) > 0:
-            print("graagl")
-            valids = [0.0]
-            strehls = []
-            base_aperture_error = random.random() * 0.1 + 0.95
-            if not zfix:
-                z = {}
-                zsum = 0.0
-                zmaxsum = 0.0
-                for paramname in ['z5', 'z6','z7','z8','z9', 'z16', 'z25', 'z36']:
-                    if paramname.lower()[0] == 'z' and paramname[1].isdigit():
-                        z_range = z_ranges(int(paramname[1:]))
-                        z_random = (random.random() * (z_range * 2) - z_range)
-                        z[paramname] = z_random / base_aperture
-                        zsum += np.abs(z_random)
-                        zmaxsum += z_range
-                if not 0.32 < zsum < 0.65:
-                    print("Invali WFE {:.3f}! repeating...".format(zsum))
-                    valids.append(1.0)
-                    if not zfix:
-                        continue
-            else:
-                z = {'z9': 0.022253602152529917, 'z16': 0.24229720434201457, 'z25': 0.02173054601719872, 'z36': -0.014062440213119979}
-
-                z = {}
-                for z_ in range(5, 37):
-                    range_ = 1 * (7.0 / z_) ** 3
-                    z["z{}".format(z_)] = random.random() * range_ - range_ / 2
-
-            nom_focus_values = np.arange(slices_per_fstop)
-            dataset = []
-            tests = max(test_stopdown, subsets)
-            fstops = [base_aperture * 2 ** (n / 2 * stop_inc) for n in range(tests)]
-            for fstop in fstops:
-                if fstop != base_aperture:
-                    individual_fstop_error = 1.0 # random.random() * 0.05 + 0.975
-                else:
-                    individual_fstop_error = 1.0
-                actual_focus_values = nom_focus_values + np.random.normal(0.0, focus_motor_error * base_aperture / fstop, nom_focus_values.shape)
-                individual_df_step_error = random.random() * 0.2 + 0.9
-                model_fstop = fstop * individual_fstop_error * base_aperture_error
-                model_step = defocus_step / model_fstop / base_aperture_error * individual_df_step_error
-                print("Nominal f#: {:.3f}, actual f#: {:.3f}".format(fstop, model_fstop))
-                data = FocusSetData()
-                strehls.append(0.0)
-                for test_strehl in [False, True]:
-                    if test_strehl:
-                        arr_sag = np.array(through_focus_sag).T
-                        arr_mer = np.array(through_focus_mer).T
-                        mtf_means = np.abs(arr_sag + arr_mer).mean(axis=0) / 2
-                        cauchy_fit_x = cauchy_fit(nom_focus_values, mtf_means)[1]
-                        focus_values_to_test = [cauchy_fit_x]
-                    else:
-                        focus_values_to_test = actual_focus_values
-                    arglst = []
-                    for focus in focus_values_to_test:
-                        p = {}
-                        p['df_offset'] = defocus_offset
-                        p['df_step'] = model_step
-                        p['fstop'] = model_fstop
-                        p['base_fstop'] = base_aperture * base_aperture_error
-                        p.update(z)
-    # def try_wavefront(defocus, p, mono=False, plot=False, dummy=False, use_cuda=True, index=None,
-    #                   strehl_estimate=1.0, mtf_mean=0.7, fftsize_override=None, samples_override=None):
-                        args = (focus,
-                                p, True, False, False, False, 0, 1.0, 1.0, 384*4, 384)
-                        arglst.append(args)
-
-                    if test_strehl:
-                        tup = try_wavefront(*args)
-                        strehls[-1] = np.mean(np.abs(tup[1]) + np.abs(tup[2])) * 0.5
-                    else:
-                        outs = pool.starmap(try_wavefront, arglst)
-                        # outs = [try_wavefront(*args) for args in arglst]
-                        through_focus_sag = [out[1] for out in outs]
-                        through_focus_mer = [out[2] for out in outs]
-                # print("Fstop {} strehl {}".format(fstop, strehls[-1]))
-
-                data.merged_mtf_values = (arr_sag + arr_mer) / 2
-                data.sag_mtf_values = arr_sag
-                data.mer_mtf_values = arr_mer
-                data.focus_values = nom_focus_values
-                data.mtf_means = mtf_means
-                data.max_pos = nom_focus_values[np.argmax(data.mtf_means)]
-                data.cauchy_peak_x = cauchy_fit_x
-                diff_mtf_mean = diffraction_mtf(SPACIAL_FREQS, fstop).mean()
-                data.strehl_ests = mtf_means / diff_mtf_mean
-                data.weights = get_weights(data.merged_mtf_values.shape, nom_focus_values, cauchy_fit_x)
-                data.hints = {'df_step': model_step,# * fstop ,
-                              'df_offset': defocus_offset,
-                              'loca': 0,
-                              'focus_errors': actual_focus_values - nom_focus_values}
-
-                if not 1 < cauchy_fit_x < slices_per_fstop:
-                    print(cauchy_fit_x)
-                    valids.append(1.0)
-
-                exif = EXIF()
-                exif.aperture = fstop
-                exif.focal_length_str = "28 mm"
-                data.exif = exif
-
-                # estimate_focus_jitter(data)
-
-                dataset.append(data)
-
-                secret_ground_truth = {}
-                secret_ground_truth.update(z)
-                secret_ground_truth['df_step'] = model_step
-                secret_ground_truth['df_offset'] = defocus_offset
-                secret_ground_truth['base_fstop'] = base_aperture * base_aperture_error
-                secret_ground_truth['fstop'] = model_fstop
-                data.secret_ground_truth = secret_ground_truth
-            strehls = np.array(strehls)
-            monotonic = np.all(np.diff(strehls) > -0.1)
-            print("Strehls {}".format(str(strehls)))
-            print("Monotonic ish? {}".format(str(monotonic)))
-            print("Strehls {:.3f} -> {:.3f}".format(min(strehls), max(strehls)))
-            if 1 or monotonic and min(strehls) > -1 and max(strehls) > 0.8:
-                pass
-            else:
-                print("Not valid, rerunning!")
-                valids.append(1.0)
-
-        print("Actual focus values: {}".format(str(actual_focus_values)))
-        print("Zs: {}".format(str(z)))
-        print("F-stops: {}".format(str(fstops)))
-
-    return dataset[:subsets]
-
-
-# def remove_last_saved_wavefront_data(focusset):
-#     focusset.read_wavefront_data(overwrite=True)
-#     new_wfd = focusset.wavefront_data[:-1]
-#     save_wafefront_data(focusset.get_wavefront_data_path(), new_wfd, overwrite=True)
-
-
-
-def get_loca_kernel(p, normalise_shift, soft_limit=True):
-    if p == 0:
-        return np.array([1]), 0, 0
-    fabsoka = np.clip(np.abs(p['loca']) * 1e2, 1e-12, np.inf)
-
-    e_cutoff = CHEAP_LOCA_CUTOFF
-    inc = 2.0 / fabsoka ** 0.2 * p['df_step'] * p['base_fstop'] ** 0.5
-
-    if inc < 0.1 and soft_limit:
-        inc = 0.03 + 0.03 / (0.06 / inc) ** 2
-    else:
-        if inc < 0.05:
-            raise ValueError("Too much LOCA!")
-
-    raw_kernel_size = max(13.5, -np.log(e_cutoff) / inc)
-    required_kernel_size = int(raw_kernel_size + 1.0)
-
-    # print(raw_kernel_size)
-
-    centred_xvals = np.arange(required_kernel_size * 2 -1) - required_kernel_size + 1
-    # print(centred_xvals)
-
-    e = np.exp(-np.arange(0, required_kernel_size * inc + 1, inc))[:int(required_kernel_size)]
-    if required_kernel_size < len(e) - 1:
-        e[int(required_kernel_size):] = 0
-
-    kernel_raw = np.concatenate((np.zeros((required_kernel_size-1,)), e))
-    # print(len(kernel_raw))
-    hann = np.cos(np.clip(centred_xvals / raw_kernel_size * np.pi * 1.1, -np.pi, np.pi)) + 1
-    kernel_windowed = kernel_raw * hann
-    kernel = kernel_windowed / kernel_windowed.sum()  # Normalise
-
-    # plt.plot(centred_xvals, hann)
-    # plt.plot(centred_xvals, kernel_windowed)
-    # plt.plot(centred_xvals, kernel_raw)
-    # plt.show()
-
-    xvals = np.arange(len(kernel))
-    if p['loca'] < 0:
-        kernel = np.flip(kernel)
-    if normalise_shift:
-        interpxvals = np.arange(-10, len(kernel) + 10)
-        shift = - ((xvals - required_kernel_size + 1) * kernel).sum()
-        pad = np.zeros((10,))
-        padded_kernel = np.concatenate((pad, kernel, pad))
-
-        shift_ay = interpolate.InterpolatedUnivariateSpline(interpxvals,
-                                                            padded_kernel, k=1)(xvals - shift)
-    else:
-        shift_ay = kernel
-    # print(xvals)
-    # print(centred_xvals)
-    # print(2,kernel)
-    # print(p['loca'], shift_ay)
-
-    useful = shift_ay > 0
-    # print(useful)
-    # print(3,shift_ay)
-    # print(4,useful)
-    needed_coeffs = centred_xvals[useful]
-
-    # print(5,needed_coeffs)
-    # print(needed_coeffs)
-
-    # print(min(needed_coeffs), max(needed_coeffs))
-    clipped_kernel = shift_ay[useful]
-    # print(clipped_kernel)
-    addleft, addright = max(needed_coeffs), -min(needed_coeffs)
-    # print(addleft, addright, p['loca'])
-    # print()
-    # print()
-    # print()
-    # print()
-    # print()
-
-    # print()_
-    # exit()
-    return clipped_kernel, addleft, addright
-
-
-
 def jitterstats():
     errs = 0
     max = 0
@@ -730,157 +293,13 @@ def jitterstats():
     print(hints / num)
 
 
-def optimise_loca_colvolution_coeffs():
-    colournumber = 0
-    slices = 32
-
-    def convolve():
-        kernel, _, _ = get_loca_kernel(p, True)
-
-        output = []
-        for row in baseline_data:
-            output.append(np.convolve(row, kernel, 'valid'))
-        output = np.array(output)
-        return output
-
-    def calccost_e(params):
-        param, b = params
-        cost = ((convolve(param, b) - fancy_loca_data) ** 2).mean() * 1e3
-        print(param, b, cost)
-        return cost
-
-    def calccost(conv):
-        output = []
-        # kernel = np.zeros((len(conv)+1))
-        # kernel[int(len(conv)/2)] = 1.0 - conv.sum()
-        # print(kernel, kernel.shape)
-        actual_conv_array = conv
-        for row in baseline_data:
-            # print(row)
-            output.append(np.convolve(row, actual_conv_array, 'valid'))
-            # print(output[-1])
-        output = np.array(output)
-        cost = ((output - fancy_loca_data) ** 2).mean() * 1e3
-        print(cost)
-        return cost
-
-
-
-    # Make our null kernel
-    # nullkernel = np.zeros((sidelen*2+1,))
-    # nullkernel[sidelen] = 1
-
-    # Get a mp pool
-    pool = multiprocessing.Pool()
-
-    if len(MODEL_WVLS) < 15:
-        raise Exception("Not really enough frequencies to do this properly!")
-    loca = 0
-
-    for loca in np.linspace(0.02,6, 2):
-        fstop = 1.25
-        p = {'df_offset': slices/2,
-             'df_step': 0.42,
-             'fstop': fstop,
-             # 'z9': 0.17,
-             'base_fstop': fstop,
-             'samples': 256}
-        pass_p = p.copy()
-        pass_p['loca'] = loca
-        _, lside, rside = get_loca_kernel(pass_p, True)
-        # continue
-
-        baseline_data = []
-        fancy_loca_data = []
-        fancy_loca_focus_values = list(np.arange(slices))
-        baseline_focus_values = list(np.arange(-lside, slices + rside))
-
-        print("Generating baseline data....")
-        print(baseline_focus_values)
-        arglst = list(zip(baseline_focus_values,
-                          [p] * len(baseline_focus_values),
-                          [True] * len(baseline_focus_values)))
-        outs = pool.starmap(try_wavefront, arglst)
-        baseline_data, _, _, _ = zip(*outs)
-
-        # Reference alterations
-        p['loca'] = loca
-
-        print("Generating loca data....")
-        print(fancy_loca_focus_values)
-        arglst = list(zip(fancy_loca_focus_values, [p] * len(fancy_loca_focus_values)))
-        outs = pool.starmap(try_wavefront, arglst)
-        fancy_loca_data, _, _, _ = zip(*outs)
-        fancy_loca_data = np.array(fancy_loca_data).T
-        baseline_data = np.array(baseline_data).T
-
-        # r = []
-        # for row , b in zip(baseline_data[-1:], fancy_loca_data[-1:]):
-        # if 1:
-            # row = baseline_data.mean(axis=0)
-            # b = fancy_loca_data.mean(axis=0)
-            # stacklst = []
-            # for rolln in range(sidelen*2+1):
-            #     stacklst.append(baseline_data[:,rolln:rolln+slices])
-            # stack = np.array(stacklst)
-            # print(row)
-            # print(stack)
-            # print(b)
-            # r.append(np.linalg.lstsq(stack.T, fancy_loca_data, rcond=None)[0])
-        # r = np.array(r)
-        # plt.plot(r.mean(axis=0))
-        # plt.plot(r.mean(axis=0), 's')
-        # plt.show()
-        # exit()
-
-
-        if 0:
-            opt = optimize.minimize(calccost_e, [0.33, 0.0], method="BFGS")
-            a, b = opt.x
-            # opt = optimize.minimize(calccost, nullkernel, method='BFGS')
-            # print(opt)
-            # plt.plot(make_actual_kernel(opt.x))
-            # plt.plot(opt.x)
-        else:
-            a, b = 0.32, 0
-        # e = np.exp(-np.arange(0, sidelen * x / p['loca'], x / p['loca']))
-        # e = e / e.sum()
-        colour = COLOURS[colournumber % len(COLOURS)]
-        colournumber += 1
-        print(fancy_loca_focus_values)
-        print(convolve().mean(axis=0).shape)
-        plt.plot(fancy_loca_focus_values,
-                 convolve().mean(axis=0),
-                 '--',
-                 label="foca {}".format(fstop),
-                 color=colour)
-        plt.plot(np.array(fancy_loca_focus_values),
-                 fancy_loca_data.mean(axis=0),
-                 '-',
-                 label="loka {}".format(fstop),
-                 color=colour)
-        # plt.plot(np.array(baseline_focus_values),
-        #          baseline_data.mean(axis=0),
-        #          '-.',
-        #          label="noloka {}".format(fstop),
-        #          color=colour)
-
-    pool.close()
-
-    # plt.plot(np.concatenate((np.zeros((sidelen,)), e)))
-    # plt.plot(np.concatenate((np.zeros((sidelen,)), e)))
-    plt.legend()
-    plt.show()
-    pass
-
-
 def plot_nominal_psf(*args, wfdd={}, x_loc=IMAGE_WIDTH/2, y_loc=IMAGE_HEIGHT/2):
     # plt.cla()
     # plt.close()
     disable_plot = False
     defocuses = [-2.4, 0, 2.4, 4.8]
-    defocus_amount = 4
-    defocuses = np.linspace(-defocus_amount, defocus_amount, 5) + 0
+    defocus_amount = 2
+    defocuses = np.linspace(-defocus_amount, defocus_amount, 5)
     if not disable_plot:
         f, axes = plt.subplots(len(args), len(defocuses), sharey=True, sharex=True)
         if len(args) == 1:
@@ -892,20 +311,27 @@ def plot_nominal_psf(*args, wfdd={}, x_loc=IMAGE_WIDTH/2, y_loc=IMAGE_HEIGHT/2):
         for nd, defocus in enumerate(defocuses):
             alter = (dct['fstop'] / min_fstop) ** 2
             # alter = 1
-            s = wavefront_test.TestSettings(defocus / alter + df_offset, dct)
+            s = TestSettings(dct, defocus=defocus / alter + df_offset)
             # s.p = dict(base_fstop=1.2, fstop=1.2 * 2 ** (na / 2), df_offset=dct['df_offset'], df_step=dct['df_step'],
             #            v_scr=1, lca_slr=0, spca2=0.0)
             # s.p['v_y'] = -0.6
             # s.p['v_slr'] = 0
             s.x_loc = x_loc
             s.y_loc = y_loc
-            s.p['tca_slr'] = 1
+            # s.p['loca'] = 0
+            # s.p['loca1'] = 0
+            # s.p['spca2'] = 0
+            # s.p['spca'] = 0
+            # s.p['z9'] += 0.08
+            # s.p['z10'] = 0
+            # s.p['z11'] = 0
+            # s.p['tca_slr'] = 1
             s.return_psf = True
             s.pixel_vignetting = True
             s.lens_vignetting = True
             s.phasesamples = 384
             s.fftsize = 768
-            psf = try_wavefront(s).psf
+            psf = generate(s).psf
             # zs = {}
             # for key, value in dct.items():
             #     if key[0].lower() == 'z' and key[1].isdigit():
@@ -921,16 +347,17 @@ def plot_nominal_psf(*args, wfdd={}, x_loc=IMAGE_WIDTH/2, y_loc=IMAGE_HEIGHT/2):
                     ax = axes[nd]
                 else:
                     ax = axes[na, nd]
-                psf.plot2d(ax=ax, fig=f, axlim=defocus_amount*4)
+                psf.plot2d(ax=ax, fig=f, axlim=defocus_amount*6)
     plt.show()
 
 
 def build_normalised_scale_dictionary(gradients, ordering, target=1.0):
     listdct = {}
     for gradient, (pname, applies, _) in zip(gradients, ordering):
-        listdct[pname] = []
+        if pname not in listdct:
+            listdct[pname] = []
         for _ in applies:
-            listdct[pname].append(target * gradient)
+            listdct[pname].append(target * gradient ** 0.5)
     dct = {}
     for k, v in listdct.items():
         dct[k] = abs(np.array(v).mean())

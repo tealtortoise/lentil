@@ -1,5 +1,5 @@
 
-class GenerateCache:
+class GeneratorCache:
     def __init__(self):
         self.basephases = {}
         self.cubes = {}

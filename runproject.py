@@ -1,28 +1,21 @@
 #!/usr/bin/python3
-import os
-import logging
-from matplotlib import pyplot as plt
 
 from lentil import *
-from lentil import focus_set
 from lentil.plot_utils import COLOURS
-from lentil.wavefront import estimate_wavefront_errors
-from lentil import wavefront_utils
-from lentil.wavefront_analysis import plot_wfe_data, plot_nominal_psfs
-from lentil import wavefront_analysis
-from lentil import informal_tests
-from lentil.wavefront_config import RANDOM_SEED
-import lentil.wavefront_utils
-from lentil import wavefront_test
+from lentilwave.retrieval import estimate_wavefront_errors
+from lentilwave import analysis
 
 BASE_PATH = "/home/sam/nashome/MTFMapper Stuff/"
+
+analysis.plot_tstops()
+exit()
 
 PATHS = [
     # "Bernard/",
 
-    # "56mm/f1.2/",
-    # "56mm/f2.8/",
-    # "56mm/f5.6/",
+    "56mm/f1.2/",
+    "56mm/f2.8/",
+    "56mm/f5.6/",
     # "56mm/f8/",
 
 #     '16mm/f1.4/',
@@ -33,7 +26,7 @@ PATHS = [
     # '16mm/f8/',
     # '16mm/f11/',
 
-    '16-55mm/16mm/f2.8/',
+    # '16-55mm/16mm/f2.8/',
     # '16-55mm/16mm/f4/',
     # '16-55mm/16mm/f5.6/',
     # '16-55mm/16mm/f8/',
@@ -172,9 +165,17 @@ freq = 0.28
 fallbackpaths = [fallback_results_path(os.path.join(BASE_PATH, path), 3) for path in PATHS[:]]
 #
 # focussets2 = [FocusSet(path, include_all=0, use_calibration=1, load_complex=False) for path in fallbackpaths[:1]]
-focussets = [FocusSet(path, include_all=0, use_calibration=1, load_complex=True) for path in fallbackpaths[:1]]
-focussets[0].fields[9].plot_points(8/64,SAGITTAL, add_corners=True)
-focussets[0].fields[9].plot_points(8/64,MERIDIONAL, add_corners=True)
+focussets = [FocusSet(path, include_all=0, use_calibration=1, load_complex=False) for path in fallbackpaths[:1]]
+# for x, y in [(5600, 3700), (200, 3800), (200, 200), (5800, 200)]:
+    # x, y = 5800, 3800
+    # x, y = 200, 3800
+    # x, y = 200, 200
+    # x, y = 5800, 200
+    # focussets[0].plot_sfr_vs_freq_at_point_for_each_field(x, y, SAGITTAL)
+    # focussets[0].plot_sfr_vs_freq_at_point_for_each_field(x, y, MERIDIONAL)
+# exit()
+#focussets[0].fields[9].plot_points(8/64,SAGITTAL, add_corners=True)
+#focussets[0].fields[9].plot_points(8/64,MERIDIONAL, add_corners=True)
 # ax = plt.gca()
 # fig = ax.figure
 # ax.set_xlim(0,0.5)
@@ -194,7 +195,7 @@ focussets[0].fields[9].plot_points(8/64,MERIDIONAL, add_corners=True)
 # focussets[0].plot_best_sfr_vs_freq_at_point(5500, 3800, secondline_fn=lambda f: diffraction_mtf(f, 2.8), x_values=RAW_SFR_FREQUENCIES[:32:2])
 # focussets[0].fields[9].plot_points(add_corners=True, autoscale=True)
 # focussets[0].fields[0].plot_points(add_corners=True, autoscale=True)
-exit()
+# exit()
 # focussets[0].plot_best_sfr_vs_freq_at_point(2500, 2800, secondline_fn=lambda f: diffraction_mtf(f, 2.8))
 # focussets[0].plot_best_sfr_vs_freq_at_point(5500, 3800)
 # focussets[0].find_best_focus(5500, 3800, axis=SAGITTAL, plot=True, freq=0.06)
@@ -203,13 +204,12 @@ exit()
 # focussets[0].plot_mtf_vs_image_height(show_diffraction=focussets[0].exif.aperture)
 # focussets[0].plot_best_sfr_vs_freq_at_point(x=2500, y=2500, axis=SAGITTAL)
 #focussets[0].fields[9].plot_fit_errors_2d()
-# wavefront_analysis.plot_nominal_psfs(focussets[0], x_loc=2500, y_loc=1500, stop_downs=(0,1,2,3))
-# wavefront_analysis.plot_chromatic_aberration(focussets[0])
+# analysis.plot_nominal_psfs(focussets[0], x_loc=3400, y_loc=1600, stop_downs=(0,1,2,3))
+# analysis.plot_chromatic_aberration(focussets[0])
 # exit()
 # /
-initial = np.array([0.02721456, 0.00222576, 0.0018912 , 0.0011071 , 0.00080761,
-       0.00070897, 0.00103615, 0.00106133, 0.00116017, 0.00117367,
-       0.00112622, 0.        , 0.        , 0.        , 0.        ,
+initial = np.array([0.2       , 2.46468085, 1.61460029, 1.36471719, 0.0875    ,
+       0.10284683, 0.06707652, 0.        , 0.        , 0.        ,
        0.        , 0.        , 0.        , 0.        , 0.        ,
        0.        , 0.        , 0.        , 0.        , 0.        ,
        0.        , 0.        , 0.        , 0.        , 0.        ,
@@ -218,8 +218,10 @@ initial = np.array([0.02721456, 0.00222576, 0.0018912 , 0.0011071 , 0.00080761,
        0.        , 0.        , 0.        , 0.        , 0.        ,
        0.        , 0.        , 0.        , 0.        , 0.        ,
        0.        , 0.        , 0.        , 0.        , 0.        ,
-       0.        , 0.        , 0.        , 0.        , 0.00044135,
-       0.        , 0.        ])
+       0.        , 0.        , 0.        , 0.        , 0.        ,
+       0.2       , 0.        , 0.        ])
+# initial[:10] *= 2
+initial = None
 # grads, ordering = estimate_wavefront_errors(fallbackpaths, fs_slices=(20, 16, 14, 13, 12), from_scratch=True, x_loc=4800, y_loc=3400,
 #                           plot_gradients_initial=initial, complex_otf=True, avoid_ends=1)
 # grads = np.array([-1.36072816e+01,  1.69517186e-01,  5.66556794e-02,  1.07142371e-01,  6.73504528e-02,  7.64492433e-02, -1.21165080e+01, -8.23269748e+00, -5.84318337e+00, -2.90676978e+00, -1.16881759e+00,  9.83174243e-02, -2.32998051e-04,  4.93216159e-01,  2.42837039e-01, -8.06567277e-01,  1.95430222e-01, -6.62891194e-02, -4.86538038e-02,  6.61537089e-04, -4.03025633e-01, -3.27707870e-01,  4.02323164e-01, -4.63855289e-02,  4.54533814e-04, -1.71025883e-01,  1.49387170e-01, -4.52590505e-02, -1.51844004e-03, -5.89063372e-02,  1.08724961e-01, -3.97145341e-01,  1.15179117e-02, -2.25768424e-02,  9.07004911e-02, -6.25102395e-04,  7.15260058e-02,  7.15260058e-02, -3.01056248e-02, -7.19909981e-03, -1.21362845e-01, -8.03395493e-02,  5.62270768e-01, -4.35906331e-03,  6.46375807e-05,  6.33907675e-02,  5.55825523e-02, -2.56299716e-02, -3.45226735e-05, -9.26226302e-02, -3.86147789e-02, -1.78741781e-01, -3.99309336e-04,  6.79413080e-02,  1.62836500e-01, -4.71954079e-02, -6.63889213e-02, -3.99380827e-02,
@@ -229,21 +231,13 @@ initial = np.array([0.02721456, 0.00222576, 0.0018912 , 0.0011071 , 0.00080761,
 # dct = wavefront_utils.build_normalised_scale_dictionary(grads, ordering)
 # print(dct)
 # exit()
-# estimate_wavefront_errors(fallbackpaths, fs_slices=(20, 16, 14, 13, 10), from_scratch=False, x_loc=2500, y_loc=1500,
+# estimate_wavefront_errors(fallbackpaths, fs_slices=(25,23,21,19), from_scratch=False, x_loc=3400, y_loc=1600,
 #                           plot_gradients_initial=None, complex_otf=True, avoid_ends=1)
-# estimate_wavefront_errors(fallbackpaths, fs_slices=(20, 16, 14, 13, 10), from_scratch=False, x_loc=5500, y_loc=500,
-#                           plot_gradients_initial=None, complex_otf=True, avoid_ends=1)
-# estimate_wavefront_errors(fallbackpaths, fs_slices=(20, 16, 14, 13, 12), from_scratch=False, x_loc=1200, y_loc=2500,
-#                           plot_gradients_initial=None, complex_otf=True, avoid_ends=1)
-# estimate_wavefront_errors(fallbackpaths, fs_slices=(32,38,39,38,38), from_scratch=False, x_loc=1200, y_loc=3500,
-#                           plot_gradients_initial=None, complex_otf=True, avoid_ends=0)
-# estimate_wavefront_errors(fallbackpaths, fs_slices=(32,38,39,38,38), from_scratch=False, x_loc=2600, y_loc=2600,
-#                           plot_gradients_initial=None, complex_otf=True, avoid_ends=0)
-estimate_wavefront_errors(fallbackpaths, fs_slices=(20, 16, 14), from_scratch=False, x_loc=1100, y_loc=3600,
-                          plot_gradients_initial=None, complex_otf=True, avoid_ends=1)
+estimate_wavefront_errors(fallbackpaths, fs_slices=(33, 29, 13), from_scratch=False, x_loc=5200, y_loc=3750,
+                          plot_gradients_initial=initial, complex_otf=True, avoid_ends=1)
 # estimate_wavefront_errors(fallbackpaths, fs_slices=(35,26,22,22,15), from_scratch=False, x_loc=2300, y_loc=1600,
 #                           plot_gradients_initial=None, complex_otf=True)
-# estimate_wavefront_errors(fallbackpaths, fs_slices=(35,26,18,15,15), from_scratch=False, x_loc=5600, y_loc=900,
+# estimate_wavefront_errors(fallbackpaths, fs_slices=(22,20,18,15,15), from_scratch=False, x_loc=4800, y_loc=3400,
 #                           plot_gradients_initial=None, complex_otf=True)
 # estimate_wavefront_errors(fallbackpaths, fs_slices=(35,25,25,25), from_scratch=False, x_loc=2300, y_loc=1600,
 #                           plot_gradients_initial=None, complex_otf=True)

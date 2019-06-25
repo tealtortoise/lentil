@@ -1,6 +1,6 @@
 from lentil.constants_utils import *
-from lentil.wavefront_test import get_z4, get_z9
-from lentil.wavefront_config import MODEL_WVLS
+from lentilwave.helpers import get_z4, get_z9
+from lentilwave.config import MODEL_WVLS
 
 def test_z4():
     tests = np.linspace(-2, 2, 5)

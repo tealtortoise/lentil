@@ -4,27 +4,24 @@ import signal
 import multiprocessing
 from multiprocessing.pool import ThreadPool
 from collections import OrderedDict
-import cupy
 import prysm
 import numpy as np
-# import nlopt
+import matplotlib
+from matplotlib import animation
 
-import lentil.wavefront_test__old
 from lentil import wavefront_utils
 from lentil.constants_utils import *
-from lentil.wavefront_utils import TerminateOptException, get_loca_kernel
+from lentil.wavefront_utils import TerminateOptException
 from lentilwave.encode_decode import encode_parameter_tuple, decode_parameter_tuple
-from lentil.wavefront_config__old import SPACIAL_FREQS, MODEL_WVLS, OPTIMISE_PARAMS, PARAMS_OPTIONS, FIXED_PARAMS, COST_MULTIPLIER, SAVE_RESULTS, DISABLE_MULTIPROCESSING, MAXITER, USE_CHEAP_LOCA_MODEL, CHEAP_LOCA_NORMALISE_FOCUS_SHIFT
-from lentil import wavefront_config__old
+from lentilwave import config, helpers
 from lentil.focus_set import save_wafefront_data, scan_path, read_wavefront_file
 
-from lentilwave import generate, TestSettings
+from lentilwave import generate, TestSettings, GeneratorCache
+
+matplotlib.use("Qt5agg")
 
 keysignal = ""
 exit_signal = False
-
-# plot_pixel_vignetting_loss()
-# exit()
 
 
 def testme(samples, loops=16*5, Q=2, *args, **kwargs):
@@ -40,10 +37,11 @@ def testme(samples, loops=16*5, Q=2, *args, **kwargs):
 
 
 def testmul(samples, total_loops=16*5, Q=2):
-
     pool.starmap(testme, [(samples, int(total_loops / 8), Q)] * 8)
 
+
 pool = multiprocessing.Pool(processes=8)
+
 
 def run_model():
     defocuses = 16
@@ -58,8 +56,6 @@ def run_model():
                 # mtfs.append(mt.slices().x[1][20])
 
 
-# run_model()
-# exit()
 def testq():
     for q in np.linspace(2,5,4):
         psflst = []
@@ -78,11 +74,6 @@ def testq():
     plt.ylim(0,1)
     plt.show()
 
-# testq()
-# exit()
-
-
-
 
 def _wait_for_keypress():
     global keysignal
@@ -100,26 +91,26 @@ def _save_data(ps, initial_ps, set, dataset, fun, nit, nfev, success, starttime,
     for p_list, dct in [(ps, all_p), (initial_ps, all_p_init)]:
         for p, data in zip(ps[:], set[:]):
             for key, value in p.items():
-                if key in PARAMS_OPTIONS:
-                    opt_per_focusset = PARAMS_OPTIONS[key][4]
+                if key in config.PARAMS_OPTIONS:
+                    opt_per_focusset = config.PARAMS_OPTIONS[key][4]
                 elif key == 'fstop_corr':
-                    opt_per_focusset = wavefront_config__old.OPT_PER_FOCUSSET
+                    opt_per_focusset = config.OPT_PER_FOCUSSET
                 else:
-                    opt_per_focusset = wavefront_config__old.OPT_SHARED
-                if opt_per_focusset == wavefront_config__old.OPT_PER_FOCUSSET:
+                    opt_per_focusset = config.OPT_SHARED
+                if opt_per_focusset == config.OPT_PER_FOCUSSET:
                     fstop = data.exif.aperture
                     dct["{}@{}".format(key, fstop)] = value
-                elif opt_per_focusset == wavefront_config__old.OPT_SHARED:
+                elif opt_per_focusset == config.OPT_SHARED:
                     if p is ps[0]:
                         dct[key] = value
 
     # for p, pinit, focusset, data in zip(ps, initial_ps, set, dataset):
     outdict = {}
-    extra = {'zernike.numbering': wavefront_config__old.ZERNIKE_SCHEME,
-             'prysm.samples': wavefront_config__old.DEFAULT_SAMPLES,
+    extra = {'zernike.numbering': config.ZERNIKE_SCHEME,
+             'prysm.samples': config.DEFAULT_SAMPLES,
              'fstops': [_.exif.aperture for _ in set],
-             'frequencies': ["{:.6f}".format(_) for _ in SPACIAL_FREQS],
-             'wavelengths': list(MODEL_WVLS),
+             'frequencies': ["{:.6f}".format(_) for _ in config.SPACIAL_FREQS],
+             'wavelengths': list(config.MODEL_WVLS),
              'wfe.unit': "wavelengths (575nm)",
              'final.cost': fun,
              'num.iterations': nit,
@@ -128,14 +119,8 @@ def _save_data(ps, initial_ps, set, dataset, fun, nit, nfev, success, starttime,
              'runtime': time.time()-starttime,
              'x.loc': dataset[0].x_loc,
              'y.loc': dataset[0].y_loc,
-             'cheap.loca.model':USE_CHEAP_LOCA_MODEL,
-             'cheap.loca.model.normalise':CHEAP_LOCA_NORMALISE_FOCUS_SHIFT,
-             'cost.multiplier': COST_MULTIPLIER,
+             'cost.multiplier': config.COST_MULTIPLIER,
              'total.num.fevals': count}
-    # for freq, arr in zip(SPACIAL_FREQS, data.weights):
-    #     extra["Weights.frequency(cy/px):{:.6f}".format(freq)] = list(arr)
-    # for freq, arr in zip(SPACIAL_FREQS, data.chart_mtf_values):
-    #     extra["Chart.MTFs.frequency(cy/px):{:.6f}".format(freq)] = list(arr)
 
     for data in dataset:
         extra["fields@{}".format(data.exif.aperture)] = list(data.focus_values)
@@ -153,7 +138,7 @@ def _save_data(ps, initial_ps, set, dataset, fun, nit, nfev, success, starttime,
     for key in ps[0].keys():
         nodigitskey = key.split(".")[0]
         try:
-            outdict["p.opt.per.fstop:"+nodigitskey] = str(PARAMS_OPTIONS[nodigitskey][4])
+            outdict["p.opt.per.fstop:"+nodigitskey] = str(config.PARAMS_OPTIONS[nodigitskey][4])
         except KeyError:
             pass
 
@@ -164,11 +149,11 @@ def _save_data(ps, initial_ps, set, dataset, fun, nit, nfev, success, starttime,
     else:
         wavefront_data = [("Optimised wavefront data", outdict)]
     try:
-        path = set[0].get_wavefront_data_path(seed=wavefront_config__old.RANDOM_SEED)
+        path = set[0].get_wavefront_data_path(seed=config.RANDOM_SEED)
     except AttributeError:
         path = "wavefront_results/"
     # path = "/home/sam/"
-    if 1 and SAVE_RESULTS:
+    if 1 and config.SAVE_RESULTS:
         suffix = "x{}.y{}".format(dataset[0].x_loc, dataset[0].y_loc)
         if autosave:
             suffix += ".autosave"
@@ -197,7 +182,7 @@ def _calculate_cost(modelall, chartall, split, weightsall, count=1):
     complex_sq = (realdiffs**2 + imagdiffs**2)
     # meansquares = ((np.abs(modelall - chartall) * 1e3) ** 2 * weightsall).mean() * 1e-4
     meansquares = ((complex_sq + magdiffs ** 2) * weightsall).mean()
-    return meansquares * wavefront_config__old.COST_WEIGHT_MEAN_SQUARES, 0, meansquares * wavefront_config__old.COST_WEIGHT_MEAN_SQUARES, 0
+    return meansquares * config.COST_WEIGHT_MEAN_SQUARES, 0, meansquares * config.COST_WEIGHT_MEAN_SQUARES, 0
     models = _split_array(modelall, split)
     charts = _split_array(chartall, split)
     line_trends = []
@@ -237,7 +222,7 @@ def _calculate_cost(modelall, chartall, split, weightsall, count=1):
 
         # skewcosts.append(skewcost)
 
-        line_trend = np.polyfit(SPACIAL_FREQS, line_err_grads, 1)
+        line_trend = np.polyfit(config.SPACIAL_FREQS, line_err_grads, 1)
         line_trends.append(line_trend[0])
 
     # linegradcost = (np.array(line_err_grads) * 1e3).mean()
@@ -254,12 +239,12 @@ def _calculate_cost(modelall, chartall, split, weightsall, count=1):
 
     peak_mnsq = (((np.array(modelpeaks) - np.array(chartpeaks))*1e3)**2).mean() * 1e-6
 
-    final = (peak_mnsq * wavefront_config__old.COST_WEIGHT_PEAK_LOCATIONS +
-             linegradcost * wavefront_config__old.COST_WEIGHT_LINE_DIFF
-             + meansquares * wavefront_config__old.COST_WEIGHT_MEAN_SQUARES)
-    return (final, linegradcost * wavefront_config__old.COST_WEIGHT_LINE_DIFF,
-            meansquares * wavefront_config__old.COST_WEIGHT_MEAN_SQUARES,
-            peak_mnsq * wavefront_config__old.COST_WEIGHT_PEAK_LOCATIONS,)
+    final = (peak_mnsq * config.COST_WEIGHT_PEAK_LOCATIONS +
+             linegradcost * config.COST_WEIGHT_LINE_DIFF
+             + meansquares * config.COST_WEIGHT_MEAN_SQUARES)
+    return (final, linegradcost * config.COST_WEIGHT_LINE_DIFF,
+            meansquares * config.COST_WEIGHT_MEAN_SQUARES,
+            peak_mnsq * config.COST_WEIGHT_PEAK_LOCATIONS,)
 
 
 def _jiggle_zeds(x, passed_options_ordering):
@@ -311,7 +296,7 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
             for data in dataset:
                 try:
                     pass
-                    entry, number = scan_path(data.get_wavefront_data_path(wavefront_config__old.RANDOM_SEED))
+                    entry, number = scan_path(data.get_wavefront_data_path(config.RANDOM_SEED))
                 except FileNotFoundError:
                     break
                 # entry, number = scan_path('wavefront_results/')
@@ -346,13 +331,14 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
     t_prep = 0
     t_calc = 0
     t_run = 0
-    cpu_gpu_fftsize_boundary = wavefront_config__old.CPU_GPU_ARRAYSIZE_BOUNDARY
+    cpu_gpu_fftsize_boundary = config.CPU_GPU_ARRAYSIZE_BOUNDARY
     # extend_model = 15
     last_x = None
     lastcost = np.inf
     allsubprocesstimes = []
     allevaltimes = []
-    process_details_cache = []
+    process_details_cache = GeneratorCache()
+
     starttime = time.time()
 
     chart_lst_sag = []
@@ -379,9 +365,12 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
     ######################
     # Set up live plotting
 
-    if wavefront_config__old.LIVE_PLOTTING and plot_gradients_initial is None:
+    if config.LIVE_PLOTTING and plot_gradients_initial is None:
         plt.show()
+        plt.ion()
+
         fig, axesarray = plt.subplots(2, 2, sharey=False, sharex=True, gridspec_kw={'height_ratios': [3, 1]})
+        # animation.FuncAnimation(fig=fig, )
         subplots = [[{}, {}], [{}, {}]]
         chart_axes = [[SAGITTAL, MERIDIONAL], [SAGITTAL, MERIDIONAL]]
         fns = [[np.abs, np.abs], [np.imag, np.imag]]
@@ -396,9 +385,9 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
                 axes.set_ylim(*limit)
                 axes.hlines(0, min(focus_values_concat), max(focus_values_concat))
                 plotdict['plot_process_fn'] = fn
-                for n, (freq, vals, alpha) in enumerate(zip(wavefront_utils.SPACIAL_FREQS[wavefront_config__old.PLOT_LINES],
-                                                            chart_vals[wavefront_config__old.PLOT_LINES],
-                                                            wavefront_config__old.PLOT_ALPHAS)):
+                for n, (freq, vals, alpha) in enumerate(zip(config.SPACIAL_FREQS[config.PLOT_LINES],
+                                                            chart_vals[config.PLOT_LINES],
+                                                            config.PLOT_ALPHAS)):
                     color = NICECOLOURS[n % 4]
                     axes.plot(focus_values_concat, fn(vals), '--', label="Chart {:.2f}".format(freq), color=color, alpha=0.5)
                     line,  = axes.plot(focus_values_concat, fn(vals), '-', label="Model {:.2f}".format(freq), color=color, alpha=alpha)
@@ -410,7 +399,7 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
     #####################
     # Set up process pools
 
-    if processes is None and not DISABLE_MULTIPROCESSING:
+    if processes is None and not config.DISABLE_MULTIPROCESSING:
         prysm.zernike.cupyzcache = {}
         multi = True
         optimal_processes = multiprocessing.cpu_count()
@@ -433,12 +422,12 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
             signal.signal(signal.SIGINT, shutupshop)
             signal.signal(signal.SIGQUIT, shutupshop)
 
-        if wavefront_config__old.CPU_ONLY_PROCESSES is not None:
-            processes = wavefront_config__old.CPU_ONLY_PROCESSES
+        if config.CPU_ONLY_PROCESSES is not None:
+            processes = config.CPU_ONLY_PROCESSES
         # pool = multiprocessing.pool.ThreadPool
         pool = multiprocessing.Pool
-        cpupool = pool(processes=wavefront_config__old.CUDA_CPU_PROCESSES if wavefront_config__old.USE_CUDA else processes, initializer=init)
-        cudapool = pool(processes=wavefront_config__old.CUDA_PROCESSES, initializer=init)
+        cpupool = pool(processes=config.CUDA_CPU_PROCESSES if config.USE_CUDA else processes, initializer=init)
+        cudapool = pool(processes=config.CUDA_PROCESSES, initializer=init)
 
 
     else:
@@ -525,7 +514,7 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
             dummy = nd not in onlyset
             p['base_fstop'] = loop_base_fstop
 
-            if 'df_each' in OPTIMISE_PARAMS:
+            if 'df_each' in config.OPTIMISE_PARAMS:
                 focus_offsets = np.zeros((len(data.focus_values),))
                 for key, value in p.items():
                     if key.startswith("df_each."):
@@ -563,8 +552,7 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
                 s.x_loc = x_loc
                 s.y_loc = y_loc
                 s.exif = data.exif
-
-                if s.get_processing_details().allow_cuda:
+                if s.get_processing_details(cache_=process_details_cache).allow_cuda:
                     gpu_arg_lst.append((s,))
                 else:
                     cpu_arg_lst.append((s,))
@@ -575,8 +563,6 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
         t_prep += time.time() - t
         t = time.time()
 
-        # f = wavefront_test._try_wavefront_prysmref
-        f = wavefront_test.try_wavefront
         f = generate
 
         if multi:
@@ -659,14 +645,14 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
                 ratio = 0.5
             if ratio < 0.03 or ratio > 0.97:
                 if iterations > prev_iterations or count % 50 == 51:
-                    scale = wavefront_config__old.PARAMS_OPTIONS[order[0]][5]
+                    scale = config.PARAMS_OPTIONS[order[0]][5]
                     log.warning(
                         "{} ({}) if at {:.3f} very close to bounds {:.3f} {:.3f}".format(order[0],
                                                                                          order[1],
                                                                                          arg / scale,
                                                                                          low / scale,
                                                                                          high / scale))
-            if wavefront_config__old.ENFORCE_BOUNDS_IN_COST and np.abs(ratio - 0.5) * 2 > 1.01:
+            if config.ENFORCE_BOUNDS_IN_COST and np.abs(ratio - 0.5) * 2 > 1.01:
                 bounds_cost = float("inf")
             else:
                 bounds_cost = 0
@@ -705,11 +691,11 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
             # endsummarydict["MPratio"] = singlethread_loop_time * (len(cpu_arg_lst )+len(gpu_arg_lst)) * count / evaltime
             try:
                 endsummarydict['cpu.fft'] = (np.array(cpu_fftsizes)**2).mean() ** 0.5
-            except (FloatingPointError, RuntimeWarning):
+            except (FloatingPointError, RuntimeWarning, TypeError):
                 pass
             try:
                 endsummarydict['gpu.fft'] = (np.array(gpu_fftsizes)**2).mean() ** 0.5
-            except (FloatingPointError, RuntimeWarning):
+            except (FloatingPointError, RuntimeWarning, TypeError):
                 pass
             # endsummarydict['tot.loca.ext'] = int(sum(loca_split) - sum(split))
             endsummarydict["tot.t"] = int(time.time() - starttime)
@@ -767,32 +753,37 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
                 print("  ".join(headerstrlst))
             print("  ".join(displaystrlst))
 
-        if plot or (wavefront_config__old.LIVE_PLOTTING and (iterations > prev_iterations or count % 2 == 0)) and plot_gradients_initial is None:
+        if plot or (config.LIVE_PLOTTING and (iterations > prev_iterations or count % 2 == 0)) and plot_gradients_initial is None:
             for chartaxespair, plotdictpair in zip(chart_axes, subplots):
                 for chart_axis, plotdict in zip(chartaxespair, plotdictpair):
                     lines = plotdict['lines']
                     plot_process_fn = plotdict['plot_process_fn']
                     if chart_axis == SAGITTAL:
-                        modelvals = offset_model_sag_values[wavefront_config__old.PLOT_LINES]
+                        modelvals = offset_model_sag_values[config.PLOT_LINES]
                     else:
-                        modelvals = offset_model_mer_values[wavefront_config__old.PLOT_LINES]
+                        modelvals = offset_model_mer_values[config.PLOT_LINES]
                     for n, (line, vals) in enumerate(zip(lines, modelvals)):
                         line.set_ydata(plot_process_fn(vals))
             plt.draw()
-            plt.pause(1e-6)
+            # fig = plt.gcf()
+            # fig.canvas.draw_idle()
+            # fig.canvas.start_event_loop(0.001)
+        # plt.draw()
+        # plt.pause(1e-6)
+        plot_pause_replacement(0.0001)
         count += 1
         it_count += 1
         prev_iterations = iterations
         lastcost = cost
-        return cost * wavefront_config__old.HIDDEN_COST_SCALE
+        return cost * config.HIDDEN_COST_SCALE
 
     initial_guess, optimise_bounds, passed_options_ordering = encode_parameter_tuple(dataset)
-    # exit()
     if plot_gradients_initial is not None and plot_gradients_initial is not False:
         if plot_gradients_initial is True:
             plot_gradients_initial = initial_guess
         baseline = np.array(plot_gradients_initial)# * wavefront_config.SCALE_EXTRA[:len(plot_gradients_initial)]
 
+        basecost = prysmfit(baseline, overwrite_chart_data=True)
         basecost = prysmfit(baseline, overwrite_chart_data=True)
         deltainc = 1e-7
         numvals = 5
@@ -877,41 +868,19 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
     #     b = decoded2[0][0][name]
     #     print(name, b/a)
     # exit()
+    # initial_guess = np.array([ 7.95491490e-01,  3.84964101e-01,  2.12450713e-01,  1.79721721e-01,  1.43101984e-01,  6.74843242e-02,  4.34775008e-02,  2.00516834e+00,  3.16013031e-03, -2.07175262e-02,  5.71575128e-01, -4.98384198e-01,  6.83835807e-01, -9.95122416e-03, -6.07881985e-03,  5.08843921e-02,  7.14862281e-01, -1.01710079e-01,  3.98190507e-03,  1.94799207e-01,  1.11768689e-01,  8.00320126e-02,  7.01782155e-02,  3.34419326e-01, -3.00961991e-04,  7.25419917e-02])
+
     prysmfit(initial_guess)
     # plt.show()
     # exit()
 
     # Profile and fine tune
-    if wavefront_config__old.USE_CUDA and wavefront_config__old.CPU_GPU_FFTSIZE_BOUNDARY_FINETUNE:
+    if config.USE_CUDA and config.CPU_GPU_FFTSIZE_BOUNDARY_FINETUNE:
         for _ in range(5):
             prysmfit(initial_guess, return_timing_only=True)
-        # hithigh  = False
-        # hitlow = False
-        # while 0:
-        #     cpuwaits = []
-        #     evals = []
-        #     print("Trying fftsize boundary {}".format(cpu_gpu_fftsize_boundary))
-        #     for _ in range(3):
-        #         eval, wait = prysmfit(initial_guess, return_timing_only=True, no_process_details_cache=True)
-        #         cpuwaits.append(wait)
-        #         evals.append(eval)
-        #     meaneval = np.mean(evals)
-        #     print("   Time {:.3f}".format(meaneval))
-        #     meanwait = np.mean(cpuwaits)
-        #     print(meaneval, meanwait)
-        #     if meanwait < 0.1:
-        #         cpu_gpu_fftsize_boundary += 16
-        #         if hithigh:
-        #             break
-        #         hitlow = True
-        #     else:
-        #         cpu_gpu_fftsize_boundary -= 16
-        #         if hitlow:
-        #             break
-        #         hithigh = True
 
         # tries = np.linspace(-120,120, 7) + wavefront_config.CPU_GPU_FFTSIZE_BOUNDARY
-        tries = CUDA_GOOD_FFT_SIZES[(CUDA_GOOD_FFT_SIZES < wavefront_config__old.FINETUNE_MAX) * (CUDA_GOOD_FFT_SIZES >= wavefront_config__old.FINETUNE_MIN)]
+        tries = CUDA_GOOD_FFT_SIZES[(CUDA_GOOD_FFT_SIZES < config.FINETUNE_MAX) * (CUDA_GOOD_FFT_SIZES >= config.FINETUNE_MIN)]
         # tries = tries[tries >= 0]
 
         times = []
@@ -926,11 +895,6 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
                 cpuwaits.append(wait)
                 evals.append(eval)
             times.append(np.mean(evals))
-            # try:
-            #     if times[-1] > times[-2] > times[-3]:
-            #         break
-            # except IndexError:
-            #     pass
         times = np.array(times)
         valid = times < min(times)*1.35
         if sum(valid) > 2000:
@@ -956,40 +920,8 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
     # _save_data(initial_ps,initial_ps,set, dataset, 0,0,0,0,0)
     for p in initial_ps:
         print(p)
-    # exit()
-    #     p['base_fstop'] = min(p['fstop'] for p in initial_ps)
-    #     plt.plot(strehl_est_concat)
-    #     plt.plot(chart_mtf_means_concat)
-    #     plt.plot([get_processing_details(strehl, mtfm, p, mtf=(sag, mer))[0] / 500 for
-    #               strehl, mtfm, sag, mer in
-    #               zip(strehl_est_concat, chart_mtf_means_concat, chart_sag_concat.T, chart_mer_concat.T)],
-    #              label="fftsize")
-    #     plt.plot([get_processing_details(strehl, mtfm, p, mtf=(sag, mer))[1] / 500 for
-    #               strehl, mtfm, sag, mer in
-    #               zip(strehl_est_concat, chart_mtf_means_concat, chart_sag_concat.T, chart_mer_concat.T)],
-    #              label="samples")
-    #     plt.legend()
-    #     plt.show()
-    # exit()
-
-    # print(initial_ps[0])
-    # initial_ps[0]['base_fstop'] = initial_ps[0]['fstop']
-    # print(dataset[0].cauchy_peak_x)
-    # wavefront_utils.plot_nominal_psf(initial_ps[0])
-    # exit()
     fun = None
 
-    # Plot Zs
-    # y = []
-    # x = []
-    # for key, val in initial_ps[0].items():
-    #     if key.startswith('z') and key[1].isdigit():
-    #         x.append(int(key[1:]))
-    #         y.append(val)
-    # plt.cla()
-    # plt.plot(x, y)
-    # plt.show()
-    # exit()
     def compare_hidden(ps):
         print("{:14}: {:>9} {:>9} {:>9}".format("Param", "Fit", "Truth", "Error"))
         print("-------------------------------------------------")
@@ -1002,9 +934,9 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
 
             nodigitskey = key.split(".")[0]
             if key == 'fstop_corr':
-                per_focusset = PARAMS_OPTIONS['fstop'][4]
+                per_focusset = config.PARAMS_OPTIONS['fstop'][4]
             else:
-                per_focusset = PARAMS_OPTIONS[nodigitskey][4]
+                per_focusset = config.PARAMS_OPTIONS[nodigitskey][4]
             try:
                 truths = [data.secret_ground_truth[key] for data in dataset]
             except KeyError:
@@ -1021,182 +953,138 @@ def estimate_wavefront_errors(set, fs_slices=16, skip=1, from_scratch=False, pro
                 if not per_focusset:
                     break
 
-    if 1:
-        options = {#'ftol': 1e-6,
-                   # 'eps': 1e-06 * wavefront_config.DEFAULT_SCALE,
-                   #'gtol': 1e-2,
-                   #  'xtol':1e-4,
-                   # 'maxcor':100,
-                   'maxiter': MAXITER}
+    options = {#'ftol': 1e-6,
+               # 'eps': 1e-06 * wavefront_config.DEFAULT_SCALE,
+               #'gtol': 1e-2,
+               #  'xtol':1e-4,
+               # 'maxcor':100,
+               'maxiter': config.MAXITER}
 
-        def callback(x, *args):
-            nonlocal total_iterations
-            nonlocal iterations
-            nonlocal last_x
-            global keysignal
-            nonlocal it_count
-            ps, popt, pfix = decode_parameter_tuple(x, passed_options_ordering, dataset)
-            _save_data(ps, initial_ps,set, dataset, lastcost,iterations+1, count, False, starttime, True, True)
-            last_x = x
-            total_iterations += 1
-            it_count = 0
-            iterations += 1
-            if lastcost < 0.02 or keysignal.lower() in ['s', 'a', 'x']:
-                if keysignal.lower() == 'a':
-                    keysignal = ""
-                print(keysignal)
-                raise TerminateOptException()
-            return  # lastcost > 1.0
+    def callback(x, *args):
+        nonlocal total_iterations
+        nonlocal iterations
+        nonlocal last_x
+        global keysignal
+        nonlocal it_count
+        ps, popt, pfix = decode_parameter_tuple(x, passed_options_ordering, dataset)
+        _save_data(ps, initial_ps,set, dataset, lastcost,iterations+1, count, False, starttime, True, True)
+        last_x = x
+        total_iterations += 1
+        it_count = 0
+        iterations += 1
+        if lastcost < 0.02 or keysignal.lower() in ['s', 'a', 'x']:
+            if keysignal.lower() == 'a':
+                keysignal = ""
+            print(keysignal)
+            raise TerminateOptException()
+        return  # lastcost > 1.0
 
-        fun = np.inf
-        bestfun = np.inf
-        while fun > 0.02 and keysignal.lower() not in ['x', 's']:
+    fun = np.inf
+    bestfun = np.inf
+    while fun > 0.02 and keysignal.lower() not in ['x', 's']:
 
-            iterations = 0
+        iterations = 0
+        try:
+            # raise TerminateOptException()
+            # opt = optimize.basinhopping(prysmfit,
+            #                             initial_guess,
+            #                             minimizer_kwargs={'method':'L-BFGS-B', 'options':options, 'callback':callback},
+            #                             callback=callback_b)
+                                        # )
+
+            # opto = nlopt.opt(nlopt.LD_SLSQP)
+            # opto.set_min_objective(prysmfit)
+
+            # watcher = threading.Thread(target=_wait_for_keypress)
+            # watcher.start()
+            hidden = False
+            for data in dataset:
+                if hasattr(data, 'secret_ground_truth'):
+                    print("Dataset has secret ground truth!")
+                    print(data.secret_ground_truth)
+                    hidden = True
+
+            def close_pools_and_exit(*args, **kwargs):
+                cudapool.close()
+                cpupool.close()
+                cudapool.terminate()
+                cpupool.terminate()
+                cudapool.join()
+                cpupool.join()
+                exit()
+
+            def raise_exit_flag(*args, **kwargs):
+                global keysignal
+                global exit_signal
+                keysignal = "s"
+                print("EXITING!!")
+
+            signal.signal(signal.SIGTERM, raise_exit_flag)
+            signal.signal(signal.SIGINT, raise_exit_flag)
+            signal.signal(signal.SIGQUIT, raise_exit_flag)
+
+            initial_ps, _, _ = decode_parameter_tuple(initial_guess, passed_options_ordering, dataset)
+
+            # opt = optimize.basinhopping(prysmfit, initial_guess,
+            #                             minimizer_kwargs=dict(method='L-BFGS-b', options=options, bounds=optimise_bounds,callback=callback),
+            #                             callback=callback_b)
+            # opt = optimize.minimize(prysmfit, initial_guess, method="SLSQP", bounds=optimise_bounds,
+            #                     options=options, callback=callback)
+            # opt = optimize.minimize(prysmfit, initial_guess, method="Nelder-Mead",# bounds=optimise_bounds,
+            #                         options=dict(maxiter=5000, maxfev=15000), callback=callback)
+            # opt = optimize.minimize(prysmfit, initial_guess, method="COBYLA", bounds=optimise_bounds,
+            #                         options=dict(), callback=callback)
+            opt = optimize.minimize(prysmfit, initial_guess, method="L-BFGS-B", bounds=optimise_bounds,
+                                    options=options, callback=callback)
+            # opt = optimize.minimize(prysmfit, initial_guess, method="trust-constr", bounds=optimise_bounds,
+            #                         options=dict(), callback=callback)
+            fun = opt.fun / config.HIDDEN_COST_SCALE
+            x = opt.x
             try:
-                # raise TerminateOptException()
-                # opt = optimize.basinhopping(prysmfit,
-                #                             initial_guess,
-                #                             minimizer_kwargs={'method':'L-BFGS-B', 'options':options, 'callback':callback},
-                #                             callback=callback_b)
-                                            # )
-
-                # opto = nlopt.opt(nlopt.LD_SLSQP)
-                # opto.set_min_objective(prysmfit)
-
-                # watcher = threading.Thread(target=_wait_for_keypress)
-                # watcher.start()
-                hidden = False
-                for data in dataset:
-                    if hasattr(data, 'secret_ground_truth'):
-                        print("Dataset has secret ground truth!")
-                        print(data.secret_ground_truth)
-                        hidden = True
-
-                def close_pools_and_exit(*args, **kwargs):
-                    cudapool.close()
-                    cpupool.close()
-                    cudapool.terminate()
-                    cpupool.terminate()
-                    cudapool.join()
-                    cpupool.join()
-                    exit()
-
-                def raise_exit_flag(*args, **kwargs):
-                    global keysignal
-                    global exit_signal
-                    keysignal = "s"
-                    print("EXITING!!")
-
-                signal.signal(signal.SIGTERM, raise_exit_flag)
-                signal.signal(signal.SIGINT, raise_exit_flag)
-                signal.signal(signal.SIGQUIT, raise_exit_flag)
-
-                initial_ps, _, _ = decode_parameter_tuple(initial_guess, passed_options_ordering, dataset)
-
-                # opt = optimize.basinhopping(prysmfit, initial_guess,
-                #                             minimizer_kwargs=dict(method='L-BFGS-b', options=options, bounds=optimise_bounds,callback=callback),
-                #                             callback=callback_b)
-                # opt = optimize.minimize(prysmfit, initial_guess, method="SLSQP", bounds=optimise_bounds,
-                #                     options=options, callback=callback)
-                # opt = optimize.minimize(prysmfit, initial_guess, method="Nelder-Mead",# bounds=optimise_bounds,
-                #                         options=dict(maxiter=5000, maxfev=15000), callback=callback)
-                # opt = optimize.minimize(prysmfit, initial_guess, method="COBYLA", bounds=optimise_bounds,
-                #                         options=dict(), callback=callback)
-                opt = optimize.minimize(prysmfit, initial_guess, method="L-BFGS-B", bounds=optimise_bounds,
-                                        options=options, callback=callback)
-                # opt = optimize.minimize(prysmfit, initial_guess, method="trust-constr", bounds=optimise_bounds,
-                #                         options=dict(), callback=callback)
-                fun = opt.fun / wavefront_config__old.HIDDEN_COST_SCALE
-                x = opt.x
-                try:
-                    nit = opt.nit
-                except AttributeError:
-                    nit = iterations
-                nfev = opt.nfev
-                print(opt)
-                success = opt.success
-            except TerminateOptException:
-                fun = lastcost
+                nit = opt.nit
+            except AttributeError:
                 nit = iterations
-                nfev = count
-                x = last_x
-                success = True
+            nfev = opt.nfev
+            print(opt)
+            success = opt.success
+        except TerminateOptException:
+            fun = lastcost
+            nit = iterations
+            nfev = count
+            x = last_x
+            success = True
 
-            print('==== FINISHED ====')
+        print('==== FINISHED ====')
 
-            ps, popt, pfix = decode_parameter_tuple(x, passed_options_ordering, dataset)
+        ps, popt, pfix = decode_parameter_tuple(x, passed_options_ordering, dataset)
 
-            # print(initial_ps)
+        # print(initial_ps)
 
-            if (fun < bestfun or keysignal.lower() in ['s']) and keysignal.lower() not in ['a', 'x']:
-                bestfun = fun
-                _save_data(ps, initial_ps, set, dataset, fun, nit, nfev, success, starttime)
+        if (fun < bestfun or keysignal.lower() in ['s']) and keysignal.lower() not in ['a', 'x']:
+            bestfun = fun
+            _save_data(ps, initial_ps, set, dataset, fun, nit, nfev, success, starttime)
 
-            if hidden:
-                compare_hidden(ps)
-                wavefront_utils.plot_nominal_psf(ps[0], dataset[0].secret_ground_truth)
-            # Shuffle zs around
-            old_initial = initial_guess.copy()
+        if hidden:
+            compare_hidden(ps)
+            wavefront_utils.plot_nominal_psf(ps[0], dataset[0].secret_ground_truth)
+        # Shuffle zs around
+        old_initial = initial_guess.copy()
 
-            initial_guess = _randomise_zeds(x, passed_options_ordering)
+        initial_guess = _randomise_zeds(x, passed_options_ordering)
 
-            new_initial_p = {}
-            old_initial_p = {}
-            inc = 0
-            for paramname, applies, fieldapplies in passed_options_ordering:
-                if len(applies) > 1:
-                    add = ""
-                else:
-                    add = "{:d}".format(applies[0])
-                new_initial_p[paramname+add] = initial_guess[inc]
-                old_initial_p[paramname+add] = old_initial[inc]
-                inc += 1
+        new_initial_p = {}
+        old_initial_p = {}
+        inc = 0
+        for paramname, applies, fieldapplies in passed_options_ordering:
+            if len(applies) > 1:
+                add = ""
+            else:
+                add = "{:d}".format(applies[0])
+            new_initial_p[paramname+add] = initial_guess[inc]
+            old_initial_p[paramname+add] = old_initial[inc]
+            inc += 1
 
-            # print("Not Jiggled:", old_initial_p)
-            # print("Jiggled:", new_initial_p)
+        # print("Not Jiggled:", old_initial_p)
+        # print("Jiggled:", new_initial_p)
 
-            close_pools_and_exit()
-
-    else:
-        fit, _ = optimize.curve_fit(prysmfit, list(focus_values) * len(wavefront_utils.SPACIAL_FREQS), chart_mtf_values.flatten(),
-                                    p0=initial_guess, sigma=1.0 / weights.flatten(), bounds=curve_fit_bounds)
-        print(fit)
-        prysmfit(0, *fit, plot=1)
-
-        est_defocus_rms_wfe_step = fit[1]
-
-    if opt.success and keysignal.lower() not in ['x', 'a']:
-        est_defocus_pv_wfe_step = est_defocus_rms_wfe_step * 2 * 3 ** 0.5
-
-        log.info("--- Focus step size estimates ---")
-        log.info("    RMS Wavefront defocus error {:8.4f} λ".format(est_defocus_rms_wfe_step))
-
-        longitude_defocus_step_um = est_defocus_pv_wfe_step * dataset[0].exif.aperture**2 * 8 * 0.55
-        log.info("    Image side focus shift      {:8.3f} µm".format(longitude_defocus_step_um))
-
-        na = 1 / (2.0 * dataset[0].exif.aperture)
-        theta = np.arcsin(na)
-        coc_step = np.tan(theta) * longitude_defocus_step_um * 2
-
-        focal_length_m = dataset[0].exif.focal_length * 1e-3
-
-        def get_opposide_dist(dist):
-            return 1.0 / (1.0 / focal_length_m - 1.0 / dist)
-
-        lens_angle_of_view = dataset[0].exif.angle_of_view
-        # print(lens_angle_of_view)
-        subject_distance = CHART_DIAGONAL * 0.5 / np.sin(lens_angle_of_view / 2)
-        image_distance = get_opposide_dist(subject_distance)
-
-        log.info("    Subject side focus shift    {:8.2f} mm".format((get_opposide_dist(image_distance-longitude_defocus_step_um *1e-6) - get_opposide_dist(image_distance)) * 1e3))
-        log.info("    Blur circle  (CoC)          {:8.2f} µm".format(coc_step))
-
-        log.info("Nominal subject distance {:8.2f} mm".format(subject_distance * 1e3))
-        log.info("Nominal image distance   {:8.2f} mm".format(image_distance * 1e3))
-
-    cpupool.close()
-    global exit_signal
-    exit_signal = True
-    return
-    return est_defocus_rms_wfe_step, longitude_defocus_step_um, coc_step, image_distance, subject_distance# , dataset[0].cauchy_peak_y
+        close_pools_and_exit()

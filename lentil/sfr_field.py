@@ -691,15 +691,15 @@ def process_esfs(esfs, points):
             height = calc_image_height(point.x, point.y)
             # if point.filenumber == 9 and 4600 < point.x < 5000 and 3200 < point.y < 3600:
             neg = (min(arr) - min(arr[0], arr[-1])) / (arr.max() - arr.min())
-            # if point.filenumber == 9 and 0.6 < height < 0.8:
-            if neg < -0.02:
-                print(neg)
-                print(point)
-                # plt.plot(RAW_SFR_FREQUENCIES, point.raw_sfr_data)
-                # plt.plot(RAW_SFR_FREQUENCIES, abs(otf))
-                # plt.plot(RAW_SFR_FREQUENCIES, abs(otf) / point.raw_sfr_data)
-                plt.plot(arr)
-                plt.show()
+            if point.filenumber == -1 and 0.6 < height < 0.9:
+                if neg < -0.017:
+                    print(neg)
+                    print(point)
+                    plt.plot(RAW_SFR_FREQUENCIES, point.raw_sfr_data)
+                    plt.plot(RAW_SFR_FREQUENCIES, abs(otf))
+                    plt.plot(RAW_SFR_FREQUENCIES, abs(otf) / point.raw_sfr_data)
+                    plt.plot(arr)
+                    plt.show()
             point.raw_sfr_data = (real ** 2 + imag ** 2) ** 0.5
             point.raw_otf = otf
             point.has_phase = True
@@ -712,7 +712,7 @@ def process_esfs(esfs, points):
             # point.raw_esf_data = arr
             # point.raw_lsf_data = padded_lsf
             goodpoints.append(point)
-    if point and point.filenumber == 190:
+    if point and point.filenumber == -190:
         exit()
     x_arr = np.array([point.x for point in goodpoints])
     y_arr = np.array([point.y for point in goodpoints])
